@@ -1,0 +1,59 @@
+name: oarlock
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: oarlock
+      POSTGRES_PASSWORD: oarlock
+      POSTGRES_DB: oarlock
+    ports:
+      - "5432:5432"
+    volumes:
+      # postgres 18+ images keep PGDATA under /var/lib/postgresql/<major>; mount the parent
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oarlock -d oarlock"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:9-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./engine
+    environment:
+      DATABASE_URL: postgres://oarlock:oarlock@postgres:5432/oarlock
+      VALKEY_ADDR: valkey:6379
+      # dev-only key; generate your own for real deployments: openssl rand -hex 32
+      OARLOCK_MASTER_KEY: 8c1f2c9f3a4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7
+    ports:
+      - "9000:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  web:
+    build: ./web
+    environment:
+      PUBLIC_API_URL: http://localhost:9000
+    ports:
+      - "3001:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  valkeydata:
