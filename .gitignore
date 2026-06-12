@@ -1,0 +1,17 @@
+# binaries
+/engine/bin/
+*.exe
+
+# env / local
+.env
+.env.local
+
+# editor
+.idea/
+.vscode/
+.DS_Store
+backups/
+
+# dependencies
+node_modules/
+/engine/api
