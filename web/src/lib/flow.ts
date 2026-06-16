@@ -24,7 +24,16 @@ export function definitionToFlow(def: Definition): { nodes: StepNode[]; edges: E
 	const edges: Edge[] = [];
 	for (const s of def.steps ?? []) {
 		for (const need of s.needs ?? []) {
-			edges.push({ id: `${need}->${s.key}`, source: need, target: s.key });
+			// A branch edge leaves the condition's named "then"/"else" handle and
+			// carries the label in its id, so then+else feeding one join don't
+			// collide on a `${source}->${target}` id.
+			const branch = s.branches?.[need];
+			edges.push({
+				id: branch ? `${need}:${branch}->${s.key}` : `${need}->${s.key}`,
+				source: need,
+				target: s.key,
+				...(branch ? { sourceHandle: branch, label: branch, data: { branch } } : {})
+			});
 		}
 	}
 	return { nodes, edges };
@@ -32,11 +41,19 @@ export function definitionToFlow(def: Definition): { nodes: StepNode[]; edges: E
 
 export function flowToDefinition(name: string, nodes: StepNode[], edges: Edge[]): Definition {
 	const steps: Step[] = nodes.map((n) => {
-		const needs = edges.filter((e) => e.target === n.id).map((e) => e.source);
+		const incoming = edges.filter((e) => e.target === n.id);
+		const needs = [...new Set(incoming.map((e) => e.source))];
+		// Branches are rebuilt from the source handle, the source of truth for
+		// which branch a successor is wired to.
+		const branches: Record<string, string> = {};
+		for (const e of incoming) {
+			if (e.sourceHandle === 'then' || e.sourceHandle === 'else') branches[e.source] = e.sourceHandle;
+		}
 		return {
 			key: n.id,
 			type: n.data.stepType,
 			...(needs.length ? { needs } : {}),
+			...(Object.keys(branches).length ? { branches } : {}),
 			config: n.data.config,
 			...(n.data.retries ? { retries: n.data.retries } : {}),
 			ui: { x: Math.round(n.position.x), y: Math.round(n.position.y) }

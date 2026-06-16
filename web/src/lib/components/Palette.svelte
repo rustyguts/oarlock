@@ -10,7 +10,7 @@
 	}
 </script>
 
-<aside class="bg-background w-64 shrink-0 overflow-y-auto border-r p-3">
+<aside class="bg-background w-64 shrink-0 overflow-y-auto border-r p-3 max-lg:hidden">
 	<h2 class="text-muted-foreground/70 px-1 text-[11px] font-semibold tracking-widest uppercase">
 		Steps
 	</h2>

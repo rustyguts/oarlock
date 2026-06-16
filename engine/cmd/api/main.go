@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -15,8 +17,11 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/rustyguts/oarlock/engine/internal/api"
+	"github.com/rustyguts/oarlock/engine/internal/artifact"
+	"github.com/rustyguts/oarlock/engine/internal/container"
 	"github.com/rustyguts/oarlock/engine/internal/db"
 	"github.com/rustyguts/oarlock/engine/internal/engine"
+	"github.com/rustyguts/oarlock/engine/internal/meter"
 	"github.com/rustyguts/oarlock/engine/internal/steps"
 	"github.com/rustyguts/oarlock/engine/internal/vault"
 )
@@ -62,9 +67,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Managed artifact store (SeaweedFS dev / R2 prod) + container runtime.
+	// Both are opt-in via env; container.run registers only when both are set.
+	store, err := buildArtifactStore(ctx, pool, log)
+	if err != nil {
+		log.Error("artifact store init failed", "error", err)
+		os.Exit(1)
+	}
+	cruntime, err := buildContainerRuntime(ctx, store, log)
+	if err != nil {
+		log.Error("container runtime init failed", "error", err)
+		os.Exit(1)
+	}
+	svc := &steps.Services{Secrets: v, MCP: v, Compute: v, Meter: meter.New(pool)}
+	var artifacts steps.ArtifactStore // nil interface unless a store is configured
+	if store != nil {
+		svc.Artifacts = store
+		artifacts = store
+	}
+	if cruntime != nil {
+		svc.Container = cruntime
+		log.Info("container runtime enabled", "backend", cruntime.Backend())
+	}
+
 	// Engine: River migrations + control/tasks queues + workers, in-process
 	// with the API for now (split into a dedicated worker binary later).
-	eng, err := engine.New(ctx, pool, steps.Default(&steps.Services{Secrets: v, MCP: v}), cache, v, log)
+	eng, err := engine.New(ctx, pool, steps.Default(svc), cache, v, cruntime, artifacts, log)
 	if err != nil {
 		log.Error("engine init failed", "error", err)
 		os.Exit(1)
@@ -99,9 +127,16 @@ func main() {
 	})
 
 	srv := &api.Server{DB: pool, Engine: eng, Cache: cache, Vault: v, Log: log}
+	if store != nil {
+		srv.Artifacts = store
+	}
 	v1 := http.NewServeMux()
 	srv.Routes(v1)
 	mux.Handle("/v1/", srv.WithAuth(v1)) // session auth (auto-login bootstrap) on all API routes
+	// Capability-token resume callback: the token is the auth, so this route is
+	// intentionally unauthenticated. It is more specific than "/v1/", so the
+	// mux routes it here instead of through WithAuth.
+	mux.HandleFunc("POST /v1/resume/{token}", srv.ResumeByToken)
 
 	httpSrv := &http.Server{Addr: addr, Handler: api.CORS(mux)}
 
@@ -156,4 +191,59 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// buildArtifactStore returns the managed artifact store, or nil if no object
+// store is configured (OARLOCK_S3_ENDPOINT unset) — which disables container.run.
+func buildArtifactStore(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) (*artifact.S3Store, error) {
+	endpoint := os.Getenv("OARLOCK_S3_ENDPOINT")
+	if endpoint == "" {
+		return nil, nil
+	}
+	ttlDays := 0
+	if v := os.Getenv("OARLOCK_ARTIFACT_TTL_DAYS"); v != "" {
+		ttlDays, _ = strconv.Atoi(v)
+	}
+	return artifact.New(ctx, pool, artifact.Config{
+		Endpoint:      endpoint,
+		AccessKey:     os.Getenv("OARLOCK_S3_ACCESS_KEY"),
+		SecretKey:     os.Getenv("OARLOCK_S3_SECRET_KEY"),
+		Bucket:        envOr("OARLOCK_S3_BUCKET", "oarlock"),
+		Region:        envOr("OARLOCK_S3_REGION", "us-east-1"),
+		UseSSL:        os.Getenv("OARLOCK_S3_USE_SSL") == "true",
+		RetentionDays: ttlDays,
+	}, log)
+}
+
+// buildContainerRuntime selects the container backend from
+// OARLOCK_CONTAINER_RUNTIME (docker | k8s | unset). Returns a nil interface
+// when unset so container.run stays unregistered.
+func buildContainerRuntime(ctx context.Context, store *artifact.S3Store, log *slog.Logger) (steps.ContainerRuntime, error) {
+	switch os.Getenv("OARLOCK_CONTAINER_RUNTIME") {
+	case "docker":
+		if store == nil {
+			return nil, fmt.Errorf("OARLOCK_CONTAINER_RUNTIME=docker requires an artifact store (set OARLOCK_S3_ENDPOINT)")
+		}
+		return container.NewDocker(ctx, os.Getenv("OARLOCK_DOCKER_SOCKET"), store, log)
+	case "k8s":
+		if store == nil {
+			return nil, fmt.Errorf("OARLOCK_CONTAINER_RUNTIME=k8s requires an artifact store (set OARLOCK_S3_ENDPOINT)")
+		}
+		return container.NewK8s(ctx, store, container.K8sConfig{
+			Kubeconfig:  os.Getenv("OARLOCK_K8S_KUBECONFIG"),
+			Namespace:   envOr("OARLOCK_K8S_NAMESPACE", "default"),
+			RunnerImage: os.Getenv("OARLOCK_RUNNER_IMAGE"),
+			// Pod-facing object store may differ from the engine's endpoint.
+			S3Endpoint:  envOr("OARLOCK_S3_POD_ENDPOINT", os.Getenv("OARLOCK_S3_ENDPOINT")),
+			S3AccessKey: os.Getenv("OARLOCK_S3_ACCESS_KEY"),
+			S3SecretKey: os.Getenv("OARLOCK_S3_SECRET_KEY"),
+			S3Bucket:    envOr("OARLOCK_S3_BUCKET", "oarlock"),
+			S3Region:    envOr("OARLOCK_S3_REGION", "us-east-1"),
+			S3UseSSL:    os.Getenv("OARLOCK_S3_USE_SSL") == "true",
+		}, log)
+	case "":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unknown OARLOCK_CONTAINER_RUNTIME %q (want docker|k8s)", os.Getenv("OARLOCK_CONTAINER_RUNTIME"))
+	}
 }

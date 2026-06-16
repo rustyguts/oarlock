@@ -1,0 +1,14 @@
+# The oarlock-runner emissary image, injected into Kubernetes container-step
+# pods (init container stages inputs + copies this static binary into the shared
+# volume; the user container then runs the copied binary to wrap the command).
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/oarlock-runner ./cmd/oarlock-runner
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/oarlock-runner /usr/local/bin/oarlock-runner
+ENTRYPOINT ["/usr/local/bin/oarlock-runner"]

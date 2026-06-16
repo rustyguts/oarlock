@@ -1,11 +1,22 @@
 {
   "mcpServers": {
     "shadcn": {
-      "command": "npx",
+      "command": "bunx",
       "args": [
         "shadcn@latest",
-        "mcp"
+        "mcp",
+        "-c",
+        "web"
       ]
+    },
+    "svelte": {
+      "type": "stdio",
+      "command": "bunx",
+      "args": [
+        "-y",
+        "@sveltejs/mcp"
+      ],
+      "env": {}
     }
   }
 }

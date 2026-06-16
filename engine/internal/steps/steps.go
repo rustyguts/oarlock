@@ -39,10 +39,14 @@ type TypeInfo struct {
 type ConfigKey struct {
 	Key         string   `json:"key"`
 	Label       string   `json:"label"`
-	Kind        string   `json:"kind"` // string|text|number|select
+	Kind        string   `json:"kind"` // string|text|number|select|rules|api_key|mcp_server|mcp_tool|compute_target
 	Options     []string `json:"options,omitempty"`
 	Placeholder string   `json:"placeholder,omitempty"`
 	Required    bool     `json:"required,omitempty"`
+	// VisibleWhen optionally gates this field on another field's value, e.g.
+	// {"mode": "rules"} shows the field only when config.mode == "rules". Empty
+	// means always visible. Consumed by the Inspector UI.
+	VisibleWhen map[string]string `json:"visible_when,omitempty"`
 }
 
 type Registry struct {
@@ -90,9 +94,9 @@ func Default(svc *Services) *Registry {
 	}, &AIPrompt{svc: svc})
 	r.Register(TypeInfo{
 		Type: "mcp.tool", Label: "MCP Tool",
-		Description: "Call a tool on one of this workspace's MCP servers",
+		Description: "Call a tool on one of this workspace's connections",
 		ConfigSpec: []ConfigKey{
-			{Key: "server", Label: "MCP server", Kind: "mcp_server", Required: true},
+			{Key: "server", Label: "Connection", Kind: "mcp_server", Required: true},
 			{Key: "tool", Label: "Tool", Kind: "mcp_tool", Required: true},
 			{Key: "arguments", Label: "Arguments (JSON)", Kind: "text", Placeholder: `{"query": "{{input.q}}"}`},
 		},
@@ -121,5 +125,38 @@ func Default(svc *Services) *Registry {
 			{Key: "seconds", Label: "Seconds", Kind: "number", Placeholder: "5", Required: true},
 		},
 	}, &Delay{})
+	// "condition" must match definition.ConditionType (kept literal here so the
+	// steps package doesn't depend on definition).
+	r.Register(TypeInfo{
+		Type: "condition", Label: "Condition (If/Else)",
+		Description: "Branch the workflow: evaluate rules (or a JS expression) and route to the Then or Else path",
+		ConfigSpec: []ConfigKey{
+			{Key: "mode", Label: "Mode", Kind: "select", Options: []string{"rules", "expression"}},
+			{Key: "combinator", Label: "Match", Kind: "select", Options: []string{"and", "or"}, VisibleWhen: map[string]string{"mode": "rules"}},
+			{Key: "rules", Label: "Rules", Kind: "rules", VisibleWhen: map[string]string{"mode": "rules"}},
+			{Key: "expression", Label: "Expression (JS)", Kind: "text", Placeholder: "steps.fetch.body.count > 0", VisibleWhen: map[string]string{"mode": "expression"}},
+		},
+	}, &Condition{})
+	// container.run is registered only when a container runtime + artifact store
+	// are configured (OARLOCK_CONTAINER_RUNTIME + object store). When absent it
+	// stays out of /v1/step-types and the palette — clean degradation.
+	if svc != nil && svc.Container != nil && svc.Artifacts != nil {
+		r.Register(TypeInfo{
+			Type: "container.run", Label: "Run Container",
+			Description: "Run any Docker image (e.g. ffprobe, ffmpeg) with files staged in and out",
+			ConfigSpec: []ConfigKey{
+				{Key: "compute_target", Label: "Compute target", Kind: "compute_target", Required: true},
+				{Key: "image", Label: "Image", Kind: "string", Placeholder: "linuxserver/ffmpeg:latest", Required: true},
+				{Key: "command", Label: "Command (JSON array)", Kind: "text", Placeholder: `["ffprobe","-v","quiet"]`},
+				{Key: "args", Label: "Args (JSON array)", Kind: "text", Placeholder: `["-print_format","json","-show_format","/oarlock/in/video.mp4"]`},
+				{Key: "env", Label: "Environment (JSON object)", Kind: "text", Placeholder: `{"LOG_LEVEL":"info","TOKEN":"{{secrets.my_token}}"}`},
+				{Key: "input_artifacts", Label: "Input artifacts (JSON)", Kind: "text", Placeholder: `[{"from":"{{steps.upload.artifacts[0].id}}","as":"video.mp4"}]`},
+				{Key: "output_globs", Label: "Output files (JSON array of globs)", Kind: "text", Placeholder: `["*.mp4","*.json"]`},
+				{Key: "cpu", Label: "CPU", Kind: "string", Placeholder: "1"},
+				{Key: "memory_mb", Label: "Memory (MB)", Kind: "number", Placeholder: "1024"},
+				{Key: "timeout_sec", Label: "Timeout (s)", Kind: "number", Placeholder: "300"},
+			},
+		}, &ContainerRun{svc: svc})
+	}
 	return r
 }

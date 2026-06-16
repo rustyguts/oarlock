@@ -15,3 +15,7 @@ backups/
 # dependencies
 node_modules/
 /engine/api
+
+# playwright transient output (baselines under tests/__snapshots__ ARE committed)
+web/test-results/
+web/playwright-report/

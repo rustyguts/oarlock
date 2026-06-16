@@ -5,7 +5,9 @@ import type { Page } from '@playwright/test';
 
 export const WF_ID = '11111111-1111-1111-1111-111111111111';
 export const WF2_ID = '22222222-2222-2222-2222-222222222222';
+export const WF3_ID = '33333333-3333-3333-3333-333333333333';
 export const RUN_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+export const COND_RUN_ID = 'aaaaaaaa-cccc-cccc-cccc-aaaaaaaaaaaa';
 
 // credentials: 'include' forbids a wildcard origin — echo the app origin.
 const CORS = {
@@ -48,6 +50,133 @@ const DEFINITION = {
 		}
 	]
 };
+
+// A dedicated branching demo (separate from DEFINITION so the existing
+// node-count waits stay valid): fetch → gate (condition) → ship (then) / hold (else).
+const COND_DEFINITION = {
+	name: 'release-gate',
+	steps: [
+		{
+			key: 'fetch',
+			type: 'http.request',
+			config: { url: 'https://api.example.com/build', method: 'GET' },
+			ui: { x: 80, y: 200 }
+		},
+		{
+			key: 'gate',
+			type: 'condition',
+			needs: ['fetch'],
+			config: {
+				mode: 'rules',
+				combinator: 'and',
+				rules: [{ operand: 'steps.fetch.body.passed', operator: '==', value: 'true', kind: 'boolean' }]
+			},
+			ui: { x: 360, y: 200 }
+		},
+		{
+			key: 'ship',
+			type: 'http.request',
+			needs: ['gate'],
+			branches: { gate: 'then' },
+			config: { url: 'https://api.example.com/ship', method: 'POST' },
+			ui: { x: 640, y: 110 }
+		},
+		{
+			key: 'hold',
+			type: 'http.request',
+			needs: ['gate'],
+			branches: { gate: 'else' },
+			config: { url: 'https://api.example.com/hold', method: 'POST' },
+			ui: { x: 640, y: 300 }
+		}
+	]
+};
+
+const COND_WORKFLOW_DETAIL = {
+	id: WF3_ID,
+	name: 'Release Gate',
+	slug: 'release-gate',
+	is_enabled: true,
+	version: 2,
+	run_count: 3,
+	failed_count: 0,
+	definition: COND_DEFINITION,
+	created_at: '2026-06-09 08:00:00+00',
+	updated_at: '2026-06-11 12:00:00+00'
+};
+
+const COND_RUN_DETAIL = {
+	id: COND_RUN_ID,
+	workflow_id: WF3_ID,
+	workflow_name: 'Release Gate',
+	version: 2,
+	definition: COND_DEFINITION,
+	status: 'succeeded',
+	input: null,
+	error: null,
+	created_at: '2026-06-12 08:45:00+00',
+	started_at: '2026-06-12 08:45:00.1+00',
+	finished_at: '2026-06-12 08:45:02.0+00',
+	tasks: [
+		{
+			id: 'cccccccc-1111-0000-0000-000000000001',
+			step_key: 'fetch',
+			attempt: 1,
+			status: 'succeeded',
+			output: { status: 200, body: { passed: true } },
+			error: null,
+			queued_at: '2026-06-12 08:45:00.1+00',
+			started_at: '2026-06-12 08:45:00.2+00',
+			finished_at: '2026-06-12 08:45:00.5+00'
+		},
+		{
+			id: 'cccccccc-1111-0000-0000-000000000002',
+			step_key: 'gate',
+			attempt: 1,
+			status: 'succeeded',
+			output: { result: true, branch: 'then' },
+			error: null,
+			queued_at: '2026-06-12 08:45:00.6+00',
+			started_at: '2026-06-12 08:45:00.65+00',
+			finished_at: '2026-06-12 08:45:00.7+00'
+		},
+		{
+			id: 'cccccccc-1111-0000-0000-000000000003',
+			step_key: 'ship',
+			attempt: 1,
+			status: 'succeeded',
+			output: { status: 200, body: { shipped: true } },
+			error: null,
+			queued_at: '2026-06-12 08:45:00.8+00',
+			started_at: '2026-06-12 08:45:00.85+00',
+			finished_at: '2026-06-12 08:45:01.9+00'
+		},
+		{
+			id: 'cccccccc-1111-0000-0000-000000000004',
+			step_key: 'hold',
+			attempt: 1,
+			status: 'skipped',
+			output: null,
+			error: null,
+			queued_at: '2026-06-12 08:45:00.7+00',
+			started_at: null,
+			finished_at: '2026-06-12 08:45:00.7+00'
+		}
+	]
+};
+
+const COND_RUNS = [
+	{
+		id: COND_RUN_ID,
+		status: 'succeeded',
+		created_at: '2026-06-12 08:45:00+00',
+		started_at: '2026-06-12 08:45:00.1+00',
+		finished_at: '2026-06-12 08:45:02.0+00',
+		version: 2,
+		task_count: 4,
+		error_summary: null
+	}
+];
 
 const STATS = {
 	totals: {
@@ -229,6 +358,43 @@ const SECRETS = [
 		type: 'generic',
 		value_hint: '…xy89',
 		created_at: '2026-06-11 09:30:00+00'
+	},
+	{
+		id: 'eeeeeeee-0000-0000-0000-000000000003',
+		name: 'ghcr',
+		type: 'registry',
+		value_hint: '…tok9',
+		created_at: '2026-06-11 14:00:00+00'
+	}
+];
+
+const COMPUTE_TARGETS = [
+	{
+		id: 'cccccccc-0000-0000-0000-000000000001',
+		name: 'local',
+		backend: 'docker',
+		cpu_limit: '1',
+		memory_mb_limit: 1024,
+		timeout_sec_limit: 600,
+		image_allowlist: [],
+		is_enabled: true,
+		created_at: '2026-06-10 12:00:00+00',
+		updated_at: '2026-06-10 12:00:00+00'
+	},
+	{
+		id: 'cccccccc-0000-0000-0000-000000000002',
+		name: 'cluster',
+		backend: 'k8s',
+		namespace: 'oarlock',
+		runtime_class: 'gvisor',
+		cpu_limit: '2',
+		memory_mb_limit: 4096,
+		timeout_sec_limit: 1800,
+		image_allowlist: ['ghcr.io/acme/'],
+		registry_secret_name: 'ghcr',
+		is_enabled: true,
+		created_at: '2026-06-10 12:00:00+00',
+		updated_at: '2026-06-10 12:00:00+00'
 	}
 ];
 
@@ -284,6 +450,34 @@ const STEP_TYPES = [
 		label: 'Delay',
 		description: 'Wait a fixed duration before continuing',
 		config_spec: [{ key: 'seconds', label: 'Seconds', kind: 'number', placeholder: '5', required: true }]
+	},
+	{
+		type: 'condition',
+		label: 'Condition (If/Else)',
+		description: 'Branch the workflow: evaluate rules (or a JS expression) and route to the Then or Else path',
+		config_spec: [
+			{ key: 'mode', label: 'Mode', kind: 'select', options: ['rules', 'expression'] },
+			{ key: 'combinator', label: 'Match', kind: 'select', options: ['and', 'or'], visible_when: { mode: 'rules' } },
+			{ key: 'rules', label: 'Rules', kind: 'rules', visible_when: { mode: 'rules' } },
+			{ key: 'expression', label: 'Expression (JS)', kind: 'text', placeholder: 'steps.fetch.body.count > 0', visible_when: { mode: 'expression' } }
+		]
+	},
+	{
+		type: 'container.run',
+		label: 'Run Container',
+		description: 'Run any Docker image (e.g. ffprobe, ffmpeg) with files staged in and out',
+		config_spec: [
+			{ key: 'compute_target', label: 'Compute target', kind: 'compute_target', required: true },
+			{ key: 'image', label: 'Image', kind: 'string', placeholder: 'linuxserver/ffmpeg:latest', required: true },
+			{ key: 'command', label: 'Command (JSON array)', kind: 'text', placeholder: '["ffprobe","-v","quiet"]' },
+			{ key: 'args', label: 'Args (JSON array)', kind: 'text', placeholder: '["-show_format","/oarlock/in/video.mp4"]' },
+			{ key: 'env', label: 'Environment (JSON object)', kind: 'text', placeholder: '{"TOKEN":"{{secrets.my_token}}"}' },
+			{ key: 'input_artifacts', label: 'Input artifacts (JSON)', kind: 'text', placeholder: '[{"from":"{{steps.upload.artifacts[0].id}}","as":"video.mp4"}]' },
+			{ key: 'output_globs', label: 'Output files (JSON array of globs)', kind: 'text', placeholder: '["*.mp4"]' },
+			{ key: 'cpu', label: 'CPU', kind: 'string', placeholder: '1' },
+			{ key: 'memory_mb', label: 'Memory (MB)', kind: 'number', placeholder: '1024' },
+			{ key: 'timeout_sec', label: 'Timeout (s)', kind: 'number', placeholder: '300' }
+		]
 	}
 ];
 
@@ -312,16 +506,27 @@ export async function mockApi(page: Page) {
 		if (path === '/v1/workflows') return json(WORKFLOWS);
 		if (path === '/v1/step-types') return json(STEP_TYPES);
 		if (path === '/v1/secrets') return json(SECRETS);
+		if (path === '/v1/compute-targets') return json(COMPUTE_TARGETS);
 		if (path === '/v1/mcp-servers') return json(MCP_SERVERS);
 		if (/^\/v1\/mcp-servers\/[^/]+\/tools$/.test(path)) return json(MCP_TOOLS);
 		if (path === `/v1/workflows/${WF_ID}`) return json(WORKFLOW_DETAIL);
 		if (path === `/v1/workflows/${WF_ID}/runs`) return json(RUNS);
+		if (path === `/v1/workflows/${WF3_ID}`) return json(COND_WORKFLOW_DETAIL);
+		if (path === `/v1/workflows/${WF3_ID}/runs`) return json(COND_RUNS);
 		if (path === `/v1/runs/${RUN_ID}/logs`) return json(LOGS);
+		if (path === `/v1/runs/${COND_RUN_ID}/logs`) return json([]);
 		if (path === `/v1/runs/${RUN_ID}/events`) {
 			return route.fulfill({
 				status: 200,
 				headers: { ...CORS, 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
 				body: `event: run\ndata: ${JSON.stringify(RUN_DETAIL)}\n\n`
+			});
+		}
+		if (path === `/v1/runs/${COND_RUN_ID}/events`) {
+			return route.fulfill({
+				status: 200,
+				headers: { ...CORS, 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+				body: `event: run\ndata: ${JSON.stringify(COND_RUN_DETAIL)}\n\n`
 			});
 		}
 		return route.fulfill({ status: 404, headers: CORS, body: '{"error":"not mocked"}' });

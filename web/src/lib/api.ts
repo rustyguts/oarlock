@@ -13,6 +13,9 @@ export interface Step {
 	key: string;
 	type: string;
 	needs?: string[];
+	// Maps a condition predecessor key → the branch ("then"/"else") this step is
+	// wired to. Derived from the canvas edge's sourceHandle.
+	branches?: Record<string, string>;
 	config?: Record<string, unknown>;
 	retries?: number;
 	ui?: StepUI;
@@ -39,10 +42,22 @@ export interface Workflow {
 export interface ConfigKey {
 	key: string;
 	label: string;
-	kind: 'string' | 'text' | 'number' | 'select' | 'api_key' | 'mcp_server' | 'mcp_tool';
+	kind:
+		| 'string'
+		| 'text'
+		| 'number'
+		| 'select'
+		| 'rules'
+		| 'api_key'
+		| 'mcp_server'
+		| 'mcp_tool'
+		| 'compute_target';
 	options?: string[];
 	placeholder?: string;
 	required?: boolean;
+	// Show this field only when another config field equals a value, e.g.
+	// { mode: 'rules' }. Empty/absent = always visible.
+	visible_when?: Record<string, string>;
 }
 
 export interface StepType {
@@ -193,10 +208,16 @@ export const api = {
 	cancelRun: (id: string) => req<{ status: string }>(`/v1/runs/${id}/cancel`, { method: 'POST' }),
 	retryRun: (id: string) => req<{ status: string }>(`/v1/runs/${id}/retry`, { method: 'POST' }),
 	runLogs: (id: string) => req<LogLine[]>(`/v1/runs/${id}/logs`),
-	// Secrets (Configuration page): generic values + BYOK api_key type
+	// Secrets (Configuration page): generic values, BYOK api_key, registry creds
 	listSecrets: () => req<Secret[]>('/v1/secrets'),
-	createSecret: (c: { name: string; type: string; provider?: string; value: string }) =>
-		req<{ id: string }>('/v1/secrets', { method: 'POST', body: JSON.stringify(c) }),
+	createSecret: (c: {
+		name: string;
+		type: string;
+		provider?: string;
+		value?: string;
+		username?: string;
+		password?: string;
+	}) => req<{ id: string }>('/v1/secrets', { method: 'POST', body: JSON.stringify(c) }),
 	deleteSecret: (id: string) => req<void>(`/v1/secrets/${id}`, { method: 'DELETE' }),
 	// MCP servers
 	listMCPServers: () => req<MCPServer[]>('/v1/mcp-servers'),
@@ -207,16 +228,53 @@ export const api = {
 		m: { name: string; url: string; auth_header?: string | null; is_enabled?: boolean }
 	) => req<{ id: string }>(`/v1/mcp-servers/${id}`, { method: 'PUT', body: JSON.stringify(m) }),
 	deleteMCPServer: (id: string) => req<void>(`/v1/mcp-servers/${id}`, { method: 'DELETE' }),
-	mcpServerTools: (id: string) => req<MCPToolInfo[]>(`/v1/mcp-servers/${id}/tools`)
+	mcpServerTools: (id: string) => req<MCPToolInfo[]>(`/v1/mcp-servers/${id}/tools`),
+	// Compute targets (for container.run steps)
+	listComputeTargets: () => req<ComputeTarget[]>('/v1/compute-targets'),
+	createComputeTarget: (t: ComputeTargetInput) =>
+		req<{ id: string }>('/v1/compute-targets', { method: 'POST', body: JSON.stringify(t) }),
+	updateComputeTarget: (id: string, t: ComputeTargetInput) =>
+		req<{ id: string }>(`/v1/compute-targets/${id}`, { method: 'PUT', body: JSON.stringify(t) }),
+	deleteComputeTarget: (id: string) =>
+		req<void>(`/v1/compute-targets/${id}`, { method: 'DELETE' })
 };
 
 export interface Secret {
 	id: string;
 	name: string;
-	type: 'generic' | 'api_key';
+	type: 'generic' | 'api_key' | 'registry';
 	provider?: string;
 	value_hint: string;
 	created_at: string;
+}
+
+export interface ComputeTarget {
+	id: string;
+	name: string;
+	backend: 'docker' | 'k8s';
+	namespace?: string;
+	runtime_class?: string;
+	cpu_limit: string;
+	memory_mb_limit: number;
+	timeout_sec_limit: number;
+	image_allowlist: string[];
+	registry_secret_name?: string;
+	is_enabled: boolean;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ComputeTargetInput {
+	name: string;
+	backend: string;
+	namespace?: string;
+	runtime_class?: string;
+	cpu_limit?: string;
+	memory_mb_limit?: number;
+	timeout_sec_limit?: number;
+	image_allowlist?: string[];
+	registry_secret_name?: string;
+	is_enabled?: boolean;
 }
 
 export interface MCPServer {

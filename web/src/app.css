@@ -10,7 +10,7 @@
 	--font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', monospace;
 }
 
-/* oarlock theme — zinc base, brand primary #ffcc00 in both modes */
+/* oarlock theme — zinc base. Brand gold #ffcc00 in dark; light mode deepens it for legibility. */
 :root {
 	--radius: 0.625rem;
 	--background: oklch(1 0 0);
@@ -20,11 +20,11 @@
 	--card-foreground: var(--foreground);
 	--popover: var(--background);
 	--popover-foreground: var(--foreground);
-	--primary: #ffcc00;
+	/* deeper than #ffcc00 so filled buttons read on white (dark text ~8.8:1) */
+	--primary: oklch(0.8 0.175 93);
 	--primary-foreground: oklch(0.24 0.04 96);
-	/* brand color for text/icons ON the background: darkened gold in light
-	   mode (raw #ffcc00 is unreadable on white), full brand in dark */
-	--primary-strong: oklch(0.55 0.125 95);
+	/* gold text/icons on the background; raw #ffcc00 fails on white (~6.7:1 here) */
+	--primary-strong: oklch(0.47 0.13 88);
 	--secondary: oklch(0.967 0.001 286.375);
 	--secondary-foreground: oklch(0.21 0.006 285.885);
 	--muted: oklch(0.967 0.001 286.375);
@@ -35,7 +35,7 @@
 	--destructive-foreground: oklch(0.985 0 0);
 	--border: oklch(0.92 0.004 286.32);
 	--input: oklch(0.92 0.004 286.32);
-	--ring: #ffcc00;
+	--ring: oklch(0.8 0.175 93);
 	--chart-1: oklch(0.646 0.222 41.116);
 	--chart-2: oklch(0.6 0.118 184.704);
 	--chart-3: oklch(0.398 0.07 227.392);
@@ -44,12 +44,12 @@
 	/* sidebar matches the body background; the border provides separation */
 	--sidebar: var(--background);
 	--sidebar-foreground: oklch(0.141 0.005 285.823);
-	--sidebar-primary: #ffcc00;
+	--sidebar-primary: oklch(0.8 0.175 93);
 	--sidebar-primary-foreground: oklch(0.24 0.04 96);
 	--sidebar-accent: oklch(0.967 0.001 286.375);
 	--sidebar-accent-foreground: oklch(0.21 0.006 285.885);
 	--sidebar-border: oklch(0.92 0.004 286.32);
-	--sidebar-ring: #ffcc00;
+	--sidebar-ring: oklch(0.8 0.175 93);
 }
 
 .dark {

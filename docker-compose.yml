@@ -30,30 +30,58 @@ services:
       timeout: 3s
       retries: 10
 
+  # SeaweedFS provides the S3-compatible artifact store in dev (R2 in prod).
+  # `weed server -s3` runs master+volume+filer+S3 all-in-one; S3 API on :8333.
+  # With no identities configured, signed requests are accepted with any keys.
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    command: server -s3 -s3.config=/etc/seaweedfs/s3.json -dir=/data -ip.bind=0.0.0.0
+    ports:
+      - "8333:8333"
+    volumes:
+      - seaweedfs_data:/data
+      - ./dev/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+
   api:
     build: ./engine
+    # dev only: run as root + mount the docker socket so the local container
+    # runtime can drive the host daemon. Socket access is host-root-equivalent;
+    # production uses the k8s backend, never this.
+    user: root
     environment:
       DATABASE_URL: postgres://oarlock:oarlock@postgres:5432/oarlock
       VALKEY_ADDR: valkey:6379
       # dev-only key; generate your own for real deployments: openssl rand -hex 32
       OARLOCK_MASTER_KEY: 8c1f2c9f3a4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7
+      # container step: local docker backend + SeaweedFS artifact store
+      OARLOCK_CONTAINER_RUNTIME: docker
+      OARLOCK_S3_ENDPOINT: seaweedfs:8333
+      OARLOCK_S3_ACCESS_KEY: oarlock
+      OARLOCK_S3_SECRET_KEY: oarlockdev
+      OARLOCK_S3_BUCKET: oarlock
+      OARLOCK_S3_REGION: us-east-1
     ports:
       - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      seaweedfs:
+        condition: service_started
 
   web:
     build: ./web
     environment:
       PUBLIC_API_URL: http://localhost:9000
     ports:
-      - "3001:3000"
+      - "3000:3000"
     depends_on:
       - api
 
 volumes:
   pgdata:
   valkeydata:
+  seaweedfs_data:

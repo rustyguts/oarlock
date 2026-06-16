@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "oarlock",
+      "credentials": [
+        { "accessKey": "oarlock", "secretKey": "oarlockdev" }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

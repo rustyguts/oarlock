@@ -133,7 +133,7 @@
 {/snippet}
 
 <div class="flex h-full min-h-0 flex-col">
-	<div class="bg-background flex h-14 shrink-0 items-center gap-3 border-b px-4">
+	<div class="bg-background flex h-14 shrink-0 items-center gap-3 border-b px-4 max-lg:h-auto max-lg:min-h-14 max-lg:flex-wrap max-lg:py-2">
 		<Button
 			variant="ghost"
 			size="icon"
@@ -142,7 +142,7 @@
 		>
 			<ArrowLeftIcon class="size-4" />
 		</Button>
-		<div class="min-w-0">
+		<div class="min-w-0 flex-1">
 			<div class="flex items-center gap-2">
 				<span class="truncate font-medium">{run?.workflow_name ?? '…'}</span>
 				<Badge variant="secondary">v{run?.version ?? '—'}</Badge>
@@ -154,7 +154,7 @@
 				run <span class="font-mono">{runId.slice(0, 8)}</span>
 				{#if run?.started_at}
 					· {fmtRelative(run.started_at)} · {fmtDuration(run.started_at, run.finished_at)}
-					· {fmtTime(run.started_at)}
+					<span class="hidden sm:inline">· {fmtTime(run.started_at)}</span>
 				{/if}
 			</div>
 		</div>
@@ -183,7 +183,7 @@
 	{/if}
 
 	<div class="relative flex min-h-0 flex-1">
-		<div class="relative min-w-0 flex-1">
+		<div class="relative min-w-0 flex-1 max-lg:hidden">
 			<SvelteFlowProvider>
 				<SvelteFlow
 					bind:nodes
@@ -205,7 +205,7 @@
 			</SvelteFlowProvider>
 		</div>
 
-		<aside class="bg-background flex w-96 shrink-0 flex-col overflow-y-auto border-l">
+		<aside class="bg-background flex shrink-0 flex-col overflow-y-auto border-l max-lg:w-full max-lg:border-l-0 lg:w-96">
 			{#if selectedStep}
 				<div class="flex items-center justify-between p-3">
 					<div>

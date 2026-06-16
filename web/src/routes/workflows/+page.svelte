@@ -47,10 +47,10 @@
 </script>
 
 <div class="w-full px-6 py-6">
-	<div class="mb-6 flex items-center justify-between gap-4">
+	<div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
 		<h1 class="text-xl font-semibold">Workflows</h1>
-		<form onsubmit={create} class="flex gap-2">
-			<Input bind:value={newName} placeholder="New workflow name…" class="w-56" />
+		<form onsubmit={create} class="flex gap-2 max-sm:w-full">
+			<Input bind:value={newName} placeholder="New workflow name…" class="w-56 max-sm:w-auto max-sm:flex-1" />
 			<Button type="submit"><PlusIcon class="size-4" /> Create</Button>
 		</form>
 	</div>
@@ -79,7 +79,7 @@
 								{wf.name}
 								<Badge variant="secondary">v{wf.version ?? '—'}</Badge>
 							</div>
-							<div class="text-muted-foreground mt-0.5 flex items-center gap-2 text-xs">
+							<div class="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
 								<span>{wf.slug}</span>
 								<span>·</span>
 								<span>{wf.run_count} {wf.run_count === 1 ? 'run' : 'runs'}</span>

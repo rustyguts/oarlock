@@ -20,15 +20,17 @@ import (
 
 	"github.com/rustyguts/oarlock/engine/internal/definition"
 	"github.com/rustyguts/oarlock/engine/internal/engine"
+	"github.com/rustyguts/oarlock/engine/internal/steps"
 	"github.com/rustyguts/oarlock/engine/internal/vault"
 )
 
 type Server struct {
-	DB     *pgxpool.Pool
-	Engine *engine.Engine
-	Cache  *redis.Client
-	Vault  *vault.Vault
-	Log    *slog.Logger
+	DB        *pgxpool.Pool
+	Engine    *engine.Engine
+	Cache     *redis.Client
+	Vault     *vault.Vault
+	Artifacts steps.ArtifactStore // nil unless an object store is configured
+	Log       *slog.Logger
 }
 
 func (s *Server) Routes(mux *http.ServeMux) {

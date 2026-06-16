@@ -149,15 +149,15 @@ func (v *Vault) Server(ctx context.Context, workspaceID uuid.UUID, name string) 
 		select url, auth_encrypted, is_enabled from mcp_servers
 		where workspace_id = $1 and name = $2`, workspaceID, name).Scan(&url, &sealed, &enabled)
 	if err != nil {
-		return "", "", fmt.Errorf("mcp server %q not found", name)
+		return "", "", fmt.Errorf("connection %q not found", name)
 	}
 	if !enabled {
-		return "", "", fmt.Errorf("mcp server %q is disabled", name)
+		return "", "", fmt.Errorf("connection %q is disabled", name)
 	}
 	if len(sealed) > 0 {
 		raw, err := v.Decrypt(sealed)
 		if err != nil {
-			return "", "", fmt.Errorf("mcp server %q: decrypt failed", name)
+			return "", "", fmt.Errorf("connection %q: decrypt failed", name)
 		}
 		authHeader = string(raw)
 	}

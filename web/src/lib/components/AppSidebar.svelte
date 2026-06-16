@@ -13,7 +13,7 @@
 	const items = [
 		{ title: 'Dashboard', href: '/', icon: LayoutDashboardIcon },
 		{ title: 'Workflows', href: '/workflows', icon: WorkflowIcon },
-		{ title: 'MCP Servers', href: '/mcp', icon: ServerIcon },
+		{ title: 'Connections', href: '/mcp', icon: ServerIcon },
 		{ title: 'Configuration', href: '/configuration', icon: Settings2Icon }
 	];
 

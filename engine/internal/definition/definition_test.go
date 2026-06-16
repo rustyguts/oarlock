@@ -56,3 +56,44 @@ func TestValidateUnknownType(t *testing.T) {
 		t.Fatal("unknown type should fail validation")
 	}
 }
+
+func TestValidateBranchesOK(t *testing.T) {
+	d := def(
+		Step{Key: "c", Type: ConditionType},
+		Step{Key: "t", Type: "log", Needs: []string{"c"}, Branches: map[string]string{"c": "then"}},
+		Step{Key: "e", Type: "log", Needs: []string{"c"}, Branches: map[string]string{"c": "else"}},
+	)
+	if err := d.Validate(known); err != nil {
+		t.Fatalf("valid if/else should validate: %v", err)
+	}
+}
+
+func TestValidateBranchNotInNeeds(t *testing.T) {
+	d := def(
+		Step{Key: "c", Type: ConditionType},
+		Step{Key: "t", Type: "log", Branches: map[string]string{"c": "then"}},
+	)
+	if err := d.Validate(known); err == nil {
+		t.Fatal("branch on a step not in needs should fail")
+	}
+}
+
+func TestValidateBranchOnNonCondition(t *testing.T) {
+	d := def(
+		Step{Key: "a", Type: "log"},
+		Step{Key: "t", Type: "log", Needs: []string{"a"}, Branches: map[string]string{"a": "then"}},
+	)
+	if err := d.Validate(known); err == nil {
+		t.Fatal("branch on a non-condition predecessor should fail")
+	}
+}
+
+func TestValidateBranchBadLabel(t *testing.T) {
+	d := def(
+		Step{Key: "c", Type: ConditionType},
+		Step{Key: "t", Type: "log", Needs: []string{"c"}, Branches: map[string]string{"c": "maybe"}},
+	)
+	if err := d.Validate(known); err == nil {
+		t.Fatal("invalid branch label should fail")
+	}
+}

@@ -136,7 +136,7 @@
 	}
 
 	async function remove(srv: MCPServer) {
-		if (!confirm(`Remove MCP server "${srv.name}"?`)) return;
+		if (!confirm(`Remove connection "${srv.name}"?`)) return;
 		try {
 			await api.deleteMCPServer(srv.id);
 			error = '';
@@ -152,14 +152,14 @@
 </script>
 
 <div class="w-full px-6 py-6">
-	<div class="mb-6 flex items-center justify-between gap-4">
+	<div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
 		<div>
-			<h1 class="text-xl font-semibold">MCP Servers</h1>
+			<h1 class="text-xl font-semibold">Connections</h1>
 			<p class="text-muted-foreground text-sm">
-				Model Context Protocol servers this workspace can call from workflows.
+				External tool connections (MCP servers) this workspace can call from workflows.
 			</p>
 		</div>
-		<Button onclick={openCreate}><PlusIcon class="size-4" /> Add server</Button>
+		<Button onclick={openCreate}><PlusIcon class="size-4" /> Add connection</Button>
 	</div>
 
 	{#if error}
@@ -174,7 +174,7 @@
 		<Card.Root class="border-dashed">
 			<Card.Content class="py-12 text-center">
 				<ServerIcon class="text-muted-foreground/50 mx-auto size-8" />
-				<p class="text-muted-foreground mt-3">No MCP servers yet.</p>
+				<p class="text-muted-foreground mt-3">No connections yet.</p>
 				<p class="text-muted-foreground/70 mt-1 text-sm">
 					Add one to call its tools from the <span class="font-mono text-xs">mcp.tool</span> step.
 				</p>
@@ -192,19 +192,19 @@
 							<ServerIcon class="size-5" />
 						</div>
 						<div class="min-w-0 flex-1">
-							<div class="flex items-center gap-2">
-								<span class="font-medium">{srv.name}</span>
+							<div class="flex min-w-0 items-center gap-2">
+								<span class="truncate font-medium">{srv.name}</span>
 								{#if !srv.is_enabled}
-									<Badge variant="secondary">disabled</Badge>
+									<Badge variant="secondary" class="shrink-0">disabled</Badge>
 								{/if}
 								{#if srv.has_auth}
-									<LockIcon class="text-muted-foreground size-3.5" aria-label="Authenticated" />
+									<LockIcon class="text-muted-foreground size-3.5 shrink-0" aria-label="Authenticated" />
 								{/if}
 							</div>
-							<div class="text-muted-foreground mt-0.5 flex items-center gap-2 truncate text-xs">
+							<div class="text-muted-foreground mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
 								<span class="truncate font-mono">{srv.url}</span>
-								<span>·</span>
-								<span>updated {fmtRelative(srv.updated_at)}</span>
+								<span class="shrink-0">·</span>
+								<span class="shrink-0 whitespace-nowrap">updated {fmtRelative(srv.updated_at)}</span>
 							</div>
 						</div>
 						<div class="flex shrink-0 items-center gap-1.5">
@@ -245,7 +245,7 @@
 <Dialog.Root bind:open>
 	<Dialog.Content class="sm:max-w-md">
 		<Dialog.Header>
-			<Dialog.Title>{editing ? 'Edit MCP server' : 'Add MCP server'}</Dialog.Title>
+			<Dialog.Title>{editing ? 'Edit connection' : 'Add connection'}</Dialog.Title>
 			<Dialog.Description>
 				Streamable-HTTP MCP endpoint. Tools become available to workflow steps.
 			</Dialog.Description>
@@ -315,7 +315,7 @@
 				{/if}
 			</Button>
 			<Button onclick={save} disabled={saving || !name.trim() || !url.trim()}>
-				{saving ? 'Saving…' : editing ? 'Save changes' : 'Add server'}
+				{saving ? 'Saving…' : editing ? 'Save changes' : 'Add connection'}
 			</Button>
 		</Dialog.Footer>
 	</Dialog.Content>

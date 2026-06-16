@@ -96,7 +96,7 @@
 	</Card.Root>
 {/snippet}
 
-<div class="flex h-full w-full flex-col gap-3 overflow-hidden px-6 py-4">
+<div class="flex w-full flex-col gap-3 px-6 py-4 lg:h-full lg:overflow-hidden">
 	<div class="flex shrink-0 items-center justify-between">
 		<div>
 			<h1 class="text-xl font-semibold tracking-tight">Dashboard</h1>
@@ -137,12 +137,12 @@
 				'bg-amber-500/15 text-amber-600 dark:text-amber-400',
 				stats.totals.active > 0 ? 'runs in flight' : 'all quiet'
 			)}
-			{@render statCard(WorkflowIcon, 'Workflows', String(stats.totals.workflows), 'bg-violet-500/15 text-violet-600 dark:text-violet-400', `${stats.totals.mcp_servers} MCP · ${stats.totals.secrets} secrets`)}
+			{@render statCard(WorkflowIcon, 'Workflows', String(stats.totals.workflows), 'bg-violet-500/15 text-violet-600 dark:text-violet-400', `${stats.totals.mcp_servers} connections · ${stats.totals.secrets} secrets`)}
 		</div>
 
-		<div class="grid min-h-0 flex-[4] gap-3 lg:grid-cols-3">
+		<div class="grid gap-3 lg:min-h-0 lg:flex-[4] lg:grid-cols-3">
 			<!-- runs over time -->
-			<Card.Root class="h-full min-h-0 gap-0 py-4 lg:col-span-2">
+			<Card.Root class="gap-0 py-4 max-lg:h-56 lg:col-span-2 lg:h-full lg:min-h-0">
 				<Card.Content class="flex h-full min-h-0 flex-col px-4">
 					<div class="mb-4 flex items-baseline justify-between">
 						<h2 class="text-sm font-semibold">Runs — last 14 days</h2>
@@ -174,7 +174,7 @@
 			</Card.Root>
 
 			<!-- task status donut -->
-			<Card.Root class="h-full min-h-0 gap-0 py-4">
+			<Card.Root class="gap-0 py-4 lg:h-full lg:min-h-0">
 				<Card.Content class="flex h-full min-h-0 flex-col justify-center px-4">
 					<h2 class="mb-4 text-sm font-semibold">Task outcomes</h2>
 					<div class="flex items-center gap-5">
@@ -215,9 +215,9 @@
 			</Card.Root>
 		</div>
 
-		<div class="grid min-h-0 flex-[5] gap-3 lg:grid-cols-2">
+		<div class="grid gap-3 lg:min-h-0 lg:flex-[5] lg:grid-cols-2">
 			<!-- top workflows -->
-			<Card.Root class="h-full min-h-0 gap-0 py-0">
+			<Card.Root class="gap-0 py-0 max-lg:h-72 lg:h-full lg:min-h-0">
 				<Card.Content class="flex h-full min-h-0 flex-col px-0">
 					<div class="flex shrink-0 items-center justify-between px-4 py-3">
 						<h2 class="text-sm font-semibold">Top workflows</h2>
@@ -254,7 +254,7 @@
 			</Card.Root>
 
 			<!-- recent activity -->
-			<Card.Root class="h-full min-h-0 gap-0 py-0">
+			<Card.Root class="gap-0 py-0 max-lg:h-72 lg:h-full lg:min-h-0">
 				<Card.Content class="flex h-full min-h-0 flex-col px-0">
 					<div class="flex shrink-0 items-center justify-between px-4 py-3">
 						<h2 class="text-sm font-semibold">Recent activity</h2>
@@ -291,7 +291,7 @@
 			</a>
 			<a href="/mcp" class="hover:border-primary/50 flex items-center gap-3 rounded-xl border p-4 transition-colors">
 				<span class="bg-blue-500/15 text-blue-600 dark:text-blue-400 flex size-9 items-center justify-center rounded-lg"><ServerIcon class="size-4.5" /></span>
-				<div><div class="text-sm font-semibold">{stats.totals.mcp_servers} MCP servers</div><div class="text-muted-foreground text-xs">tools your flows can call</div></div>
+				<div><div class="text-sm font-semibold">{stats.totals.mcp_servers} connections</div><div class="text-muted-foreground text-xs">tools your flows can call</div></div>
 			</a>
 			<a href="/configuration" class="hover:border-primary/50 flex items-center gap-3 rounded-xl border p-4 transition-colors">
 				<span class="bg-violet-500/15 text-violet-600 dark:text-violet-400 flex size-9 items-center justify-center rounded-lg"><ShieldIcon class="size-4.5" /></span>

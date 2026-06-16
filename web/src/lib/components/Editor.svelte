@@ -7,13 +7,22 @@
 		MiniMap,
 		useSvelteFlow,
 		type Edge,
+		type Connection,
 		type NodeTypes,
 		type ColorMode
 	} from '@xyflow/svelte';
 	import '@xyflow/svelte/dist/style.css';
 	import { mode } from 'mode-watcher';
 
-	import { api, watchRun, type StepType, type Run, type Secret, type MCPServer } from '$lib/api';
+	import {
+		api,
+		watchRun,
+		type StepType,
+		type Run,
+		type Secret,
+		type MCPServer,
+		type ComputeTarget
+	} from '$lib/api';
 	import { definitionToFlow, flowToDefinition, nextKey, type StepNode } from '$lib/flow';
 	import StepNodeView from './StepNode.svelte';
 	import Palette from './Palette.svelte';
@@ -38,6 +47,7 @@
 	let stepTypes = $state<StepType[]>([]);
 	let secrets = $state<Secret[]>([]);
 	let mcpServers = $state<MCPServer[]>([]);
+	let computeTargets = $state<ComputeTarget[]>([]);
 	let selectedId = $state<string | null>(null);
 	let dirty = $state(false);
 	let saving = $state(false);
@@ -52,17 +62,19 @@
 	onMount(() => {
 		(async () => {
 			try {
-				const [wf, types, keys, servers] = await Promise.all([
+				const [wf, types, keys, servers, targets] = await Promise.all([
 					api.getWorkflow(workflowId),
 					api.stepTypes(),
 					api.listSecrets().catch(() => []),
-					api.listMCPServers().catch(() => [])
+					api.listMCPServers().catch(() => []),
+					api.listComputeTargets().catch(() => [])
 				]);
 				name = wf.name;
 				version = wf.version;
 				stepTypes = types;
 				secrets = keys;
 				mcpServers = servers;
+				computeTargets = targets;
 				const flow = definitionToFlow(wf.definition ?? { steps: [] });
 				nodes = flow.nodes;
 				edges = flow.edges;
@@ -109,8 +121,23 @@
 		const config: Record<string, unknown> = {};
 		for (const f of spec?.config_spec ?? []) {
 			if (f.kind === 'select' && f.options?.length) config[f.key] = f.options[0];
+			if (f.kind === 'rules') config[f.key] = [];
 		}
 		return config;
+	}
+
+	// A connection from a condition's "then"/"else" handle becomes a branch edge:
+	// the label is stamped into the id (so then+else into one join don't collide)
+	// and carried on the edge. onbeforeconnect returns the edge to add — onconnect
+	// only fires afterward, so it can't set the id.
+	function onbeforeconnect(connection: Connection): Edge {
+		const { source, target, sourceHandle } = connection;
+		const branch = sourceHandle === 'then' || sourceHandle === 'else' ? sourceHandle : undefined;
+		return {
+			...connection,
+			id: branch ? `${source}:${branch}->${target}` : `${source}->${target}`,
+			...(branch ? { sourceHandle: branch, label: branch, data: { branch } } : {})
+		};
 	}
 
 	// --- inspector callbacks ---
@@ -131,12 +158,14 @@
 			return;
 		}
 		nodes = nodes.map((n) => (n.id === oldId ? { ...n, id: newId } : n));
-		edges = edges.map((e) => ({
-			...e,
-			id: `${e.source === oldId ? newId : e.source}->${e.target === oldId ? newId : e.target}`,
-			source: e.source === oldId ? newId : e.source,
-			target: e.target === oldId ? newId : e.target
-		}));
+		edges = edges.map((e) => {
+			const source = e.source === oldId ? newId : e.source;
+			const target = e.target === oldId ? newId : e.target;
+			// Preserve the branch segment so branch edge ids stay unique and
+			// flowToDefinition still derives branches from the source handle.
+			const seg = e.sourceHandle === 'then' || e.sourceHandle === 'else' ? `:${e.sourceHandle}` : '';
+			return { ...e, id: `${source}${seg}->${target}`, source, target };
+		});
 		selectedId = newId;
 		markDirty();
 	}
@@ -259,6 +288,7 @@
 				onnodeclick={({ node }) => (selectedId = node.id)}
 				onpaneclick={() => (selectedId = null)}
 				onnodedragstop={markDirty}
+				{onbeforeconnect}
 				onconnect={markDirty}
 				ondelete={markDirty}
 				proOptions={{ hideAttribution: true }}
@@ -277,6 +307,7 @@
 				{stepTypes}
 				{secrets}
 				{mcpServers}
+				{computeTargets}
 				{onconfig}
 				{onretries}
 				{onrename}

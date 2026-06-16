@@ -29,6 +29,14 @@ func (s *Server) resourceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/mcp-servers/{id}", s.updateMCPServer)
 	mux.HandleFunc("DELETE /v1/mcp-servers/{id}", s.deleteMCPServer)
 	mux.HandleFunc("GET /v1/mcp-servers/{id}/tools", s.listMCPServerTools)
+	mux.HandleFunc("GET /v1/compute-targets", s.listComputeTargets)
+	mux.HandleFunc("POST /v1/compute-targets", s.createComputeTarget)
+	mux.HandleFunc("PUT /v1/compute-targets/{id}", s.updateComputeTarget)
+	mux.HandleFunc("DELETE /v1/compute-targets/{id}", s.deleteComputeTarget)
+	mux.HandleFunc("POST /v1/artifacts", s.uploadArtifact)
+	mux.HandleFunc("GET /v1/artifacts/{id}", s.downloadArtifact)
+	mux.HandleFunc("DELETE /v1/artifacts/{id}", s.deleteArtifact)
+	mux.HandleFunc("GET /v1/runs/{id}/artifacts", s.listRunArtifacts)
 }
 
 // referencingWorkflows returns names of workflows whose *current* version has
@@ -107,10 +115,11 @@ func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
 		Type     string `json:"type"`
 		Provider string `json:"provider"`
 		Value    string `json:"value"`
+		Username string `json:"username"` // registry only
+		Password string `json:"password"` // registry only
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
-		strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Value) == "" {
-		s.error(w, http.StatusBadRequest, fmt.Errorf("name, type, and value are required"))
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
+		s.error(w, http.StatusBadRequest, fmt.Errorf("name and type are required"))
 		return
 	}
 	name := strings.TrimSpace(req.Name)
@@ -125,10 +134,30 @@ func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
 			s.error(w, http.StatusUnprocessableEntity, fmt.Errorf("api_key secrets need a provider: anthropic, openai, or openrouter"))
 			return
 		}
+		if strings.TrimSpace(req.Value) == "" {
+			s.error(w, http.StatusBadRequest, fmt.Errorf("value is required"))
+			return
+		}
+	case "registry":
+		req.Provider = ""
+		if strings.TrimSpace(req.Password) == "" {
+			s.error(w, http.StatusBadRequest, fmt.Errorf("registry secrets need a password/token"))
+			return
+		}
+		// Stored as JSON {username,password}; resolved by vault.Registry.
+		creds, _ := json.Marshal(map[string]string{
+			"username": strings.TrimSpace(req.Username),
+			"password": req.Password,
+		})
+		req.Value = string(creds)
 	case "generic":
 		req.Provider = ""
+		if strings.TrimSpace(req.Value) == "" {
+			s.error(w, http.StatusBadRequest, fmt.Errorf("value is required"))
+			return
+		}
 	default:
-		s.error(w, http.StatusUnprocessableEntity, fmt.Errorf("type must be generic or api_key"))
+		s.error(w, http.StatusUnprocessableEntity, fmt.Errorf("type must be generic, api_key, or registry"))
 		return
 	}
 	sealed, err := s.Vault.SealSecret(strings.TrimSpace(req.Value))
@@ -310,7 +339,7 @@ func (s *Server) createMCPServer(w http.ResponseWriter, r *http.Request) {
 		s.workspace(r), strings.TrimSpace(req.Name), strings.TrimSpace(req.URL),
 		sealed, "local-v1", a.UserID).Scan(&id)
 	if err != nil {
-		s.error(w, http.StatusConflict, fmt.Errorf("an MCP server named %q already exists", req.Name))
+		s.error(w, http.StatusConflict, fmt.Errorf("a connection named %q already exists", req.Name))
 		return
 	}
 	s.json(w, http.StatusCreated, map[string]any{"id": id})
@@ -319,7 +348,7 @@ func (s *Server) createMCPServer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateMCPServer(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid mcp server id"))
+		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid connection id"))
 		return
 	}
 	var req mcpServerReq
@@ -337,7 +366,7 @@ func (s *Server) updateMCPServer(w http.ResponseWriter, r *http.Request) {
 	err = s.DB.QueryRow(r.Context(),
 		`select name from mcp_servers where id = $1 and workspace_id = $2`, id, s.workspace(r)).Scan(&current)
 	if errors.Is(err, pgx.ErrNoRows) {
-		s.error(w, http.StatusNotFound, fmt.Errorf("mcp server not found"))
+		s.error(w, http.StatusNotFound, fmt.Errorf("connection not found"))
 		return
 	}
 	if err != nil {
@@ -394,14 +423,14 @@ func (s *Server) updateMCPServer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteMCPServer(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid mcp server id"))
+		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid connection id"))
 		return
 	}
 	var name string
 	err = s.DB.QueryRow(r.Context(),
 		`select name from mcp_servers where id = $1 and workspace_id = $2`, id, s.workspace(r)).Scan(&name)
 	if errors.Is(err, pgx.ErrNoRows) {
-		s.error(w, http.StatusNotFound, fmt.Errorf("mcp server not found"))
+		s.error(w, http.StatusNotFound, fmt.Errorf("connection not found"))
 		return
 	}
 	if err != nil {
@@ -415,7 +444,7 @@ func (s *Server) deleteMCPServer(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(refs) > 0 {
 		s.json(w, http.StatusConflict, map[string]any{
-			"error":     fmt.Sprintf("MCP server %q is used by %d workflow(s)", name, len(refs)),
+			"error":     fmt.Sprintf("connection %q is used by %d workflow(s)", name, len(refs)),
 			"workflows": refs,
 		})
 		return
@@ -433,14 +462,14 @@ func (s *Server) deleteMCPServer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listMCPServerTools(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid mcp server id"))
+		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid connection id"))
 		return
 	}
 	var name string
 	err = s.DB.QueryRow(r.Context(),
 		`select name from mcp_servers where id = $1 and workspace_id = $2`, id, s.workspace(r)).Scan(&name)
 	if errors.Is(err, pgx.ErrNoRows) {
-		s.error(w, http.StatusNotFound, fmt.Errorf("mcp server not found"))
+		s.error(w, http.StatusNotFound, fmt.Errorf("connection not found"))
 		return
 	}
 	if err != nil {

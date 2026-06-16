@@ -1,11 +1,19 @@
 <script lang="ts">
-	import { api, type StepType, type Secret, type MCPServer } from '$lib/api';
+	import {
+		api,
+		type StepType,
+		type ConfigKey,
+		type Secret,
+		type MCPServer,
+		type ComputeTarget
+	} from '$lib/api';
 	import type { StepNode } from '$lib/flow';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import * as Select from '$lib/components/ui/select/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
+	import RulesEditor from './RulesEditor.svelte';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 
 	let {
@@ -13,6 +21,7 @@
 		stepTypes,
 		secrets = [],
 		mcpServers = [],
+		computeTargets = [],
 		onconfig,
 		onretries,
 		onrename,
@@ -22,6 +31,7 @@
 		stepTypes: StepType[];
 		secrets?: Secret[];
 		mcpServers?: MCPServer[];
+		computeTargets?: ComputeTarget[];
 		onconfig: (id: string, config: Record<string, unknown>) => void;
 		onretries: (id: string, retries: number) => void;
 		onrename: (oldId: string, newId: string) => void;
@@ -53,18 +63,35 @@
 		if (kind === 'api_key') return secrets.filter((c) => c.type === 'api_key').map((c) => c.name);
 		if (kind === 'mcp_server') return mcpServers.filter((m) => m.is_enabled).map((m) => m.name);
 		if (kind === 'mcp_tool') return toolOptions;
+		if (kind === 'compute_target')
+			return computeTargets.filter((t) => t.is_enabled).map((t) => t.name);
 		return [];
 	}
 
 	function emptyHintFor(kind: string): string {
 		if (kind === 'api_key') return 'No API-key secrets yet — add one under Configuration.';
-		if (kind === 'mcp_server') return 'No MCP servers yet — add one under MCP Servers.';
+		if (kind === 'mcp_server') return 'No connections yet — add one under Connections.';
 		if (kind === 'mcp_tool') return toolsError ? `Server unreachable: ${toolsError}` : 'Pick a server first.';
+		if (kind === 'compute_target') return 'No compute targets yet — add one under Configuration.';
 		return 'No options.';
 	}
 
 	function setConfig(key: string, value: unknown) {
 		onconfig(node.id, { ...node.data.config, [key]: value });
+	}
+
+	// Effective value of a config key for visibility checks: the set value, or
+	// the field's first option (what a select shows before it's touched).
+	function effective(key: string): string {
+		const v = node.data.config[key];
+		if (v != null && v !== '') return String(v);
+		const f = spec?.config_spec.find((c) => c.key === key);
+		return f?.options?.[0] ?? '';
+	}
+
+	function visible(field: ConfigKey): boolean {
+		if (!field.visible_when) return true;
+		return Object.entries(field.visible_when).every(([k, val]) => effective(k) === val);
 	}
 
 	function commitRename() {
@@ -74,7 +101,7 @@
 	}
 </script>
 
-<aside class="bg-background flex w-72 shrink-0 flex-col overflow-y-auto border-l">
+<aside class="bg-background flex w-72 shrink-0 flex-col overflow-y-auto border-l max-lg:w-full">
 	<div class="p-3">
 		<div class="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
 			{spec?.label ?? node.data.stepType}
@@ -94,11 +121,22 @@
 
 	<div class="flex-1 space-y-3 p-3">
 		{#each spec?.config_spec ?? [] as field (field.key)}
-			<label class="block">
-				<span class="text-muted-foreground text-xs">
-					{field.label}{field.required ? ' *' : ''}
-				</span>
-				{#if field.kind === 'text'}
+			{#if !visible(field)}
+				<!-- hidden by visible_when (e.g. rules vs expression mode) -->
+			{:else if field.kind === 'rules'}
+				{@const rulesVal = (Array.isArray(node.data.config[field.key])
+					? node.data.config[field.key]
+					: []) as { operand?: string; operator?: string; value?: string; kind?: string }[]}
+				<div class="block">
+					<span class="text-muted-foreground text-xs">{field.label}</span>
+					<RulesEditor rules={rulesVal} onchange={(r) => setConfig(field.key, r)} />
+				</div>
+			{:else}
+				<label class="block">
+					<span class="text-muted-foreground text-xs">
+						{field.label}{field.required ? ' *' : ''}
+					</span>
+					{#if field.kind === 'text'}
 					<Textarea
 						rows={4}
 						placeholder={field.placeholder}
@@ -121,7 +159,7 @@
 							{/each}
 						</Select.Content>
 					</Select.Root>
-				{:else if field.kind === 'api_key' || field.kind === 'mcp_server' || field.kind === 'mcp_tool'}
+				{:else if field.kind === 'api_key' || field.kind === 'mcp_server' || field.kind === 'mcp_tool' || field.kind === 'compute_target'}
 					{@const opts = optionsFor(field.kind)}
 					{#if opts.length === 0}
 						<p class="text-muted-foreground bg-muted/50 mt-1 rounded-md border border-dashed px-2 py-1.5 text-xs">
@@ -154,15 +192,16 @@
 						}}
 						class="mt-1"
 					/>
-				{:else}
-					<Input
-						placeholder={field.placeholder}
-						value={String(node.data.config[field.key] ?? '')}
-						oninput={(e: Event) => setConfig(field.key, (e.target as HTMLInputElement).value)}
-						class="mt-1"
-					/>
-				{/if}
-			</label>
+					{:else}
+						<Input
+							placeholder={field.placeholder}
+							value={String(node.data.config[field.key] ?? '')}
+							oninput={(e: Event) => setConfig(field.key, (e.target as HTMLInputElement).value)}
+							class="mt-1"
+						/>
+					{/if}
+				</label>
+			{/if}
 		{/each}
 
 		<label class="block">

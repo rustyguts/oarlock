@@ -8,7 +8,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done
 **Exit criteria: replaced one of your own real automations and trust it.**
 
 ### 0. Quality gates
-- [x] UI snapshot tests: Playwright visual regression in `web/tests` (mocked API, frozen clock, 8 baselines incl. dark mode; `npm run test:ui`, regenerate with `test:ui:update`)
+- [x] UI snapshot tests: Playwright visual regression in `web/tests` (mocked API, frozen clock, 8 baselines incl. dark mode; `bun run test:ui`, regenerate with `test:ui:update`)
 - [x] Engine unit tests (definition/DAG validation)
 
 ### 1. Monorepo + dev stack
@@ -51,9 +51,17 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done
 ### 7. Native steps ★ MILESTONE
 - [x] `http.request` (method/url/body/headers, 1MB body cap, JSON auto-parse)
 - [x] `transform` (goja, 5s limit)
-- [x] `delay` (v0 in-process ≤5min; suspension + scheduled resume later)
+- [x] `delay` (now suspension-backed: writes a suspensions row + scheduled resume, frees the worker slot, arbitrary durations)
 - [x] ~~`log`~~ removed in migration 0007 — default task logging made it redundant
+- [x] `container.run` — run any Docker image (Docker locally, k8s Jobs at scale); managed artifact store (SeaweedFS/R2) stages files in/out; compute targets + `registry` secrets + image allowlist + container-seconds metering
 - [x] **★ multi-step diamond workflow runs end-to-end via API/UI**
+
+### 6b. Suspension engine (built with container steps)
+- [x] `Suspended` sentinel + `Resumable` interface (additive; synchronous steps untouched)
+- [x] `suspendTask` (status=suspended + suspensions row + scheduled `resume_task`, one tx) + widened `finishTask` guard
+- [x] `resume_task` worker (poll re-suspends with backoff; terminal finalizes), shared `prepareTask` prelude (redactor rebuilt per invocation)
+- [x] `POST /v1/resume/{token}` callback (unauthenticated capability), `reconcile_suspensions` safety net, cancel kills the container/Job
+- [x] `gc_artifacts` periodic sweep (retention via `artifacts.expires_at`)
 
 ### 8. Expressions
 - [x] goja with per-eval time limits + context cancel
@@ -107,7 +115,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done
 - [~] 16. AI steps, BYO keys: `ai.prompt` (provider dispatch, api_key secret select in UI). Todo: `ai.classify` structured output
 - [ ] 17. Integrations v1 (exactly five): Slack, email, Google Sheets, GitHub, webhook-out
 - [ ] 18. MCP server per workspace: `list_workflows` / `run_workflow` / `get_run_status` (+ record launch demo)
-- [ ] 19. Control flow: `code.js` (hardened goja), `foreach`, `if/branch`
+- [~] 19. Control flow: `if/branch` done — `condition` step (If/Then/Else), visual AND/OR rule builder + raw-JS expression escape hatch (reuses goja), two then/else output handles, branch-labeled edges. Engine prunes the untaken branch via idempotent skip-propagation in `advance_run` (`computePlan`: branch-dead + reachability + pruned-edge-satisfies-dep, internal fixpoint for nested conditions); untaken steps get `skipped` rows. Todo: `code.js` (hardened goja), `foreach`
 - [ ] 20. Production: DOKS + managed PG, Helm/ArgoCD, OTel→Grafana, GlitchTip, restore-drilled backups, Stripe stub
 - [ ] Alpha polish: signup, docs w/ 5 recipes, ~10 templates, usage metering, rate limits
 
@@ -120,5 +128,6 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] Stripe live; soft-warn-then-throttle fair use (never silent halt)
 - [ ] Tier-2 isolation (dedicated queue/workers) as Business upsell
 - [ ] Demand-driven: subprocess/WASM sandbox, first dedicated cell
+- [x] BYO containers (pulled forward from Phase 3): `container.run` step — Docker locally + gVisor-capable k8s Jobs at scale, suspension-based async, managed artifact store, metered container-seconds (the executor/billing boundary). See §6b/§7.
 - [x] MCP client (pulled forward from Phase 3): workspace `mcp_servers` (encrypted auth, enable/disable), `mcp.tool` step, live tools discovery, delete/rename blocked while referenced by a workflow's current version, /mcp management UI + dynamic step config selects
 - [ ] Platform operator console (control-plane surface, separate from tenant UI/API) — approach documented in [platform-administration.md](platform-administration.md)

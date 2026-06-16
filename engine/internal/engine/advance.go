@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
 	"github.com/rustyguts/oarlock/engine/internal/definition"
@@ -73,71 +74,74 @@ func (w *advanceRunWorker) Work(ctx context.Context, job *river.Job[AdvanceRunAr
 		return err
 	}
 
-	anyFailed := false
-	allSucceeded := true
-	var ready []string
-	for _, step := range def.Steps {
-		st, exists := stepStatus[step.Key]
-		if exists {
-			switch st {
-			case "failed", "canceled":
-				anyFailed = true
-				allSucceeded = false
-			case "succeeded", "skipped":
-				// done
-			default:
-				allSucceeded = false // queued/running/suspended
-			}
-			continue
-		}
-		allSucceeded = false
-		depsOK := true
-		for _, n := range step.Needs {
-			if stepStatus[n] != "succeeded" && stepStatus[n] != "skipped" {
-				depsOK = false
-				break
-			}
-		}
-		if depsOK && !anyFailed {
-			ready = append(ready, step.Key)
-		}
+	// A succeeded condition's chosen branch, so computePlan can prune the
+	// untaken side. Skipped conditions are discovered by computePlan itself, so
+	// only succeeded ones are loaded here.
+	branchChoice, err := loadBranchChoice(ctx, tx, runID, def)
+	if err != nil {
+		return err
 	}
 
-	switch {
-	case anyFailed:
-		_, err = tx.Exec(ctx, `
+	plan := computePlan(def, stepStatus, branchChoice)
+
+	if plan.anyFailed {
+		// Stop enqueuing; already-running siblings finish and their late results
+		// are dropped by the status guard (v0 has no task interruption).
+		if _, err = tx.Exec(ctx, `
 			update runs set status = 'failed', finished_at = coalesce(finished_at, now())
-			where id = $1 and status not in ('failed','canceled')`, runID)
-		if err != nil {
+			where id = $1 and status not in ('failed','canceled')`, runID); err != nil {
 			return err
 		}
-	case allSucceeded:
-		_, err = tx.Exec(ctx, `
-			update runs set status = 'succeeded', finished_at = now()
-			where id = $1`, runID)
-		if err != nil {
-			return err
-		}
-	default:
-		// Insert tasks + jobs for ready steps, one transaction (hard rule 2).
-		for _, key := range ready {
-			var taskID uuid.UUID
-			err = tx.QueryRow(ctx, `
-				insert into tasks (run_id, workspace_id, step_key, attempt, status)
-				values ($1, $2, $3, 1, 'queued')
-				on conflict (run_id, step_key, attempt) do nothing
-				returning id`, runID, workspaceID, key).Scan(&taskID)
-			if err != nil {
-				continue // conflict: another advance already inserted it
-			}
-			if _, err := w.e.Client.InsertTx(ctx, tx, ExecuteTaskArgs{TaskID: taskID}, nil); err != nil {
+	} else {
+		// Untaken branches get skipped rows so the run can terminate (a run only
+		// succeeds once every step has a succeeded/skipped row). Written even on
+		// the all-succeeded path so the rows and the terminal status commit
+		// together. Idempotent: unique (run_id, step_key, attempt) + on-conflict.
+		for _, key := range plan.skip {
+			if _, err := tx.Exec(ctx, `
+				insert into tasks (run_id, workspace_id, step_key, attempt, status, finished_at)
+				values ($1, $2, $3, 1, 'skipped', now())
+				on conflict (run_id, step_key, attempt) do nothing`, runID, workspaceID, key); err != nil {
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx, `
-			update runs set status = 'running', started_at = coalesce(started_at, now())
-			where id = $1 and status = 'queued'`, runID); err != nil {
-			return err
+		if plan.allSucceeded {
+			if _, err = tx.Exec(ctx, `
+				update runs set status = 'succeeded', finished_at = now()
+				where id = $1`, runID); err != nil {
+				return err
+			}
+		} else {
+			// Insert tasks + jobs for ready steps, one transaction (hard rule 2).
+			for _, key := range plan.ready {
+				var taskID uuid.UUID
+				err = tx.QueryRow(ctx, `
+					insert into tasks (run_id, workspace_id, step_key, attempt, status)
+					values ($1, $2, $3, 1, 'queued')
+					on conflict (run_id, step_key, attempt) do nothing
+					returning id`, runID, workspaceID, key).Scan(&taskID)
+				if err != nil {
+					continue // conflict: another advance already inserted it
+				}
+				if _, err := w.e.Client.InsertTx(ctx, tx, ExecuteTaskArgs{TaskID: taskID}, nil); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.Exec(ctx, `
+				update runs set status = 'running', started_at = coalesce(started_at, now())
+				where id = $1 and status = 'queued'`, runID); err != nil {
+				return err
+			}
+			// Belt-and-suspenders: if this pass only wrote skips (nothing ready to
+			// carry the run forward), re-advance so a freshly-unblocked join is
+			// picked up. computePlan resolves the full skip set in one pass, so
+			// this is rarely needed, and it can't loop — next pass the skipped
+			// steps have rows and drop out of plan.skip.
+			if len(plan.skip) > 0 && len(plan.ready) == 0 {
+				if _, err := w.e.Client.InsertTx(ctx, tx, AdvanceRunArgs{RunID: runID}, nil); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
@@ -145,10 +149,62 @@ func (w *advanceRunWorker) Work(ctx context.Context, job *river.Job[AdvanceRunAr
 		return err
 	}
 	w.e.notify(ctx, runID)
-	if len(ready) > 0 {
-		w.e.Log.Info("run advanced", "run_id", runID, "enqueued", ready)
+	if len(plan.ready) > 0 || len(plan.skip) > 0 {
+		w.e.Log.Info("run advanced", "run_id", runID, "enqueued", plan.ready, "skipped", plan.skip)
 	}
 	return nil
+}
+
+// loadBranchChoice reads each succeeded condition's decided branch from its
+// persisted output: the `result` boolean is the source of truth, with the
+// `branch` label as a fallback. A condition whose decision can't be read (e.g.
+// the pathological case of a workspace secret value literally equal to the
+// stored token, which redaction would scrub) is simply left undecided — then
+// computePlan prunes nothing for it and both branches run, rather than the run
+// hanging.
+func loadBranchChoice(ctx context.Context, tx pgx.Tx, runID uuid.UUID, def *definition.Definition) (map[string]string, error) {
+	var condKeys []string
+	for _, s := range def.Steps {
+		if s.Type == definition.ConditionType {
+			condKeys = append(condKeys, s.Key)
+		}
+	}
+	choice := map[string]string{}
+	if len(condKeys) == 0 {
+		return choice, nil
+	}
+	rows, err := tx.Query(ctx, `
+		select distinct on (step_key) step_key, output
+		from tasks
+		where run_id = $1 and step_key = any($2) and status = 'succeeded'
+		order by step_key, attempt desc`, runID, condKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var raw []byte
+		if err := rows.Scan(&key, &raw); err != nil {
+			return nil, err
+		}
+		var out struct {
+			Result *bool  `json:"result"`
+			Branch string `json:"branch"`
+		}
+		_ = json.Unmarshal(raw, &out)
+		switch {
+		case out.Result != nil:
+			if *out.Result {
+				choice[key] = "then"
+			} else {
+				choice[key] = "else"
+			}
+		case out.Branch == "then" || out.Branch == "else":
+			choice[key] = out.Branch
+		}
+	}
+	return choice, rows.Err()
 }
 
 // marshalJSON is a small helper that never fails the caller: marshal errors

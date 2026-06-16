@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -46,12 +47,14 @@ func (ExecuteTaskArgs) InsertOpts() river.InsertOpts {
 }
 
 type Engine struct {
-	Pool     *pgxpool.Pool
-	Client   *river.Client[pgx.Tx]
-	Registry *steps.Registry
-	Cache    *redis.Client
-	Secrets  steps.SecretSource
-	Log      *slog.Logger
+	Pool      *pgxpool.Pool
+	Client    *river.Client[pgx.Tx]
+	Registry  *steps.Registry
+	Cache     *redis.Client
+	Secrets   steps.SecretSource
+	Container steps.ContainerRuntime // nil unless a container backend is configured
+	Artifacts steps.ArtifactStore    // nil unless an object store is configured
+	Log       *slog.Logger
 }
 
 // RunChannel is the Valkey pub/sub channel for a run's change pings.
@@ -68,7 +71,7 @@ func (e *Engine) notify(ctx context.Context, runID uuid.UUID) {
 	}
 }
 
-func New(ctx context.Context, pool *pgxpool.Pool, registry *steps.Registry, cache *redis.Client, secrets steps.SecretSource, log *slog.Logger) (*Engine, error) {
+func New(ctx context.Context, pool *pgxpool.Pool, registry *steps.Registry, cache *redis.Client, secrets steps.SecretSource, container steps.ContainerRuntime, artifacts steps.ArtifactStore, log *slog.Logger) (*Engine, error) {
 	driver := riverpgxv5.New(pool)
 
 	migrator, err := rivermigrate.New(driver, nil)
@@ -79,19 +82,38 @@ func New(ctx context.Context, pool *pgxpool.Pool, registry *steps.Registry, cach
 		return nil, err
 	}
 
-	e := &Engine{Pool: pool, Registry: registry, Cache: cache, Secrets: secrets, Log: log}
+	e := &Engine{Pool: pool, Registry: registry, Cache: cache, Secrets: secrets, Container: container, Artifacts: artifacts, Log: log}
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &advanceRunWorker{e: e})
 	river.AddWorker(workers, &executeTaskWorker{e: e})
+	river.AddWorker(workers, &resumeTaskWorker{e: e})
+	river.AddWorker(workers, &reconcileSuspensionsWorker{e: e})
+	river.AddWorker(workers, &gcArtifactsWorker{e: e})
+
+	periodic := []*river.PeriodicJob{
+		river.NewPeriodicJob(
+			river.PeriodicInterval(reconcileInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return ReconcileSuspensionsArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: false},
+		),
+	}
+	if artifacts != nil {
+		periodic = append(periodic, river.NewPeriodicJob(
+			river.PeriodicInterval(gcInterval),
+			func() (river.JobArgs, *river.InsertOpts) { return GcArtifactsArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: false},
+		))
+	}
 
 	client, err := river.NewClient(driver, &river.Config{
 		Queues: map[string]river.QueueConfig{
 			QueueControl: {MaxWorkers: 10},
 			QueueTasks:   {MaxWorkers: 50},
 		},
-		Workers: workers,
-		Logger:  log,
+		Workers:      workers,
+		Logger:       log,
+		PeriodicJobs: periodic,
 	})
 	if err != nil {
 		return nil, err
@@ -176,12 +198,58 @@ func (e *Engine) CancelRun(ctx context.Context, workspaceID, runID uuid.UUID) er
 		where run_id = $1 and status in ('queued','running','suspended')`, runID); err != nil {
 		return err
 	}
+	// Collect container handles before dropping the suspensions so we can kill
+	// the real work (containers/Jobs cost money) after the state change commits.
+	handles := e.collectContainerHandles(ctx, tx, runID)
+	// Drop suspensions for this run's tasks: their scheduled resume jobs will
+	// fire harmlessly (the task is no longer 'suspended', and the row is gone),
+	// and any pending callback token stops resolving.
+	if _, err := tx.Exec(ctx, `
+		delete from suspensions where task_id in (select id from tasks where run_id = $1)`, runID); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	e.notify(ctx, runID)
+	// Best-effort kill after commit — a network failure here must not poison the
+	// cancel; leaked containers are reaped by timeout/TTL.
+	if e.Container != nil {
+		for _, h := range handles {
+			killCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			if err := e.Container.Cancel(killCtx, h); err != nil {
+				e.Log.Warn("cancel: container kill failed", "run_id", runID, "error", err)
+			}
+			cancel()
+		}
+	}
 	e.Log.Info("run canceled", "run_id", runID)
 	return nil
+}
+
+// collectContainerHandles reads container handles from the suspensions of a
+// run's tasks (best-effort), so CancelRun can kill the external work.
+func (e *Engine) collectContainerHandles(ctx context.Context, tx pgx.Tx, runID uuid.UUID) []steps.Handle {
+	rows, err := tx.Query(ctx, `
+		select payload->'handle' from suspensions s
+		join tasks t on t.id = s.task_id
+		where t.run_id = $1 and payload->'handle' is not null`, runID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var handles []steps.Handle
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil || len(raw) == 0 {
+			continue
+		}
+		var h steps.Handle
+		if json.Unmarshal(raw, &h) == nil && h != nil {
+			handles = append(handles, h)
+		}
+	}
+	return handles
 }
 
 // RetryRun re-attempts a failed or canceled run: every step whose latest

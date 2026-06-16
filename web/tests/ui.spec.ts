@@ -1,8 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
-import { mockApi, WF_ID, RUN_ID } from './mock-api';
+import { mockApi, WF_ID, WF3_ID, RUN_ID, COND_RUN_ID } from './mock-api';
 
 // Visual regression suite. Any intentional UI change requires regenerating
-// baselines with `npm run test:ui:update` and committing the diff — an
+// baselines with `bun run test:ui:update` and committing the diff — an
 // unexpected snapshot failure means the UI changed when it shouldn't have.
 
 const FROZEN_NOW = new Date('2026-06-12T09:05:00Z');
@@ -67,6 +67,24 @@ test('editor canvas — dark', async ({ page }) => {
 	await expect(page).toHaveScreenshot('editor-dark.png');
 });
 
+test('editor — condition node + rules builder', async ({ page }) => {
+	await page.goto(`/workflows/${WF3_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 4);
+	await page.click('.svelte-flow__node:has-text("gate")');
+	await page.waitForSelector('aside:has-text("Add rule")');
+	await settle(page);
+	await expect(page).toHaveScreenshot('editor-condition.png');
+});
+
+test('run detail — skipped branch', async ({ page }) => {
+	await page.emulateMedia({ colorScheme: 'dark' });
+	await page.goto(`/runs/${COND_RUN_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 4);
+	await page.waitForSelector('.svelte-flow__node:has-text("skipped")');
+	await settle(page);
+	await expect(page).toHaveScreenshot('run-detail-condition-dark.png');
+});
+
 test('run history with stats', async ({ page }) => {
 	await page.goto(`/workflows/${WF_ID}/runs`);
 	await page.waitForSelector('text=Total runs');
@@ -117,7 +135,7 @@ test('mcp server dialog — dark', async ({ page }) => {
 	await page.emulateMedia({ colorScheme: 'dark' });
 	await page.goto('/mcp');
 	await page.waitForSelector('text=github-tools');
-	await page.click('button:has-text("Add server")');
+	await page.click('button:has-text("Add connection")');
 	await page.waitForSelector('#mcp-url');
 	await settle(page);
 	await expect(page).toHaveScreenshot('mcp-dialog-dark.png');

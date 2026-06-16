@@ -88,29 +88,23 @@ func (e *Transform) Execute(ctx context.Context, in TaskInput) (TaskOutput, erro
 }
 
 // --- delay ---
-// v0: in-process wait (a parked goroutine is ~free in Go). True suspension
-// (suspensions row + scheduled resume, freeing the worker slot) lands with
-// long-horizon waits; the table is already in the schema.
+// Delay suspends instead of blocking: Execute writes a suspensions row with a
+// scheduled resume and frees the worker slot; Resume returns once the schedule
+// fires (hard rule 1 — no worker parked on a wait). Arbitrary durations are fine.
 
 type Delay struct{}
 
-const maxDelay = 5 * time.Minute
-
 func (e *Delay) Execute(ctx context.Context, in TaskInput) (TaskOutput, error) {
 	seconds := toFloat(in.Config["seconds"])
-	d := time.Duration(seconds * float64(time.Second))
-	if d <= 0 {
+	if seconds <= 0 {
 		return TaskOutput{}, fmt.Errorf("delay: seconds must be > 0")
 	}
-	if d > maxDelay {
-		return TaskOutput{}, fmt.Errorf("delay: max %s for in-process delay", maxDelay)
-	}
-	select {
-	case <-ctx.Done():
-		return TaskOutput{}, ctx.Err()
-	case <-time.After(d):
-	}
-	return TaskOutput{Data: map[string]any{"waited_seconds": seconds}}, nil
+	resumeAt := time.Now().Add(time.Duration(seconds * float64(time.Second)))
+	return TaskOutput{}, SuspendNow("delay", resumeAt, map[string]any{"waited_seconds": seconds})
+}
+
+func (e *Delay) Resume(ctx context.Context, in TaskInput, s SuspensionState) (TaskOutput, error) {
+	return TaskOutput{Data: map[string]any{"waited_seconds": s.Payload["waited_seconds"]}}, nil
 }
 
 // --- shared JS runtime helpers ---

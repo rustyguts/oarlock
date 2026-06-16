@@ -1,11 +1,11 @@
-FROM node:24-alpine AS build
+FROM oven/bun:1-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 COPY . .
-RUN npm run build && npm prune --omit=dev
+RUN bun run build && bun install --frozen-lockfile --production
 
-FROM node:24-alpine
+FROM oven/bun:1-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 RUN adduser -D -u 10001 oarlock
@@ -15,4 +15,4 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./
 ENV PORT=3000
 EXPOSE 3000
-CMD ["node", "build"]
+CMD ["bun", "./build/index.js"]

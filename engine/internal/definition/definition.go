@@ -9,18 +9,29 @@ import (
 	"fmt"
 )
 
+// ConditionType is the built-in branching step. The definition and engine
+// layers identify conditions by this type name to decide skip propagation; the
+// executor (package steps) owns the {result, branch} output shape. Kept here so
+// the validator and advance_run don't depend on the steps registry.
+const ConditionType = "condition"
+
 type Definition struct {
 	Name  string `json:"name,omitempty"`
 	Steps []Step `json:"steps"`
 }
 
 type Step struct {
-	Key     string         `json:"key"`
-	Type    string         `json:"type"`
-	Needs   []string       `json:"needs,omitempty"`
-	Config  map[string]any `json:"config,omitempty"`
-	Retries int            `json:"retries,omitempty"` // extra attempts after a failure (0–10)
-	UI      *StepUI        `json:"ui,omitempty"`      // canvas position; engine ignores it
+	Key   string   `json:"key"`
+	Type  string   `json:"type"`
+	Needs []string `json:"needs,omitempty"`
+	// Branches maps a condition predecessor key (which must be in Needs) to the
+	// branch label ("then"/"else") this step is wired to. Absent on every
+	// non-branching definition, so it changes nothing for existing workflows.
+	// Derived from the canvas edge's sourceHandle.
+	Branches map[string]string `json:"branches,omitempty"`
+	Config   map[string]any    `json:"config,omitempty"`
+	Retries  int               `json:"retries,omitempty"` // extra attempts after a failure (0–10)
+	UI       *StepUI           `json:"ui,omitempty"`      // canvas position; engine ignores it
 }
 
 type StepUI struct {
@@ -74,6 +85,26 @@ func (d *Definition) Validate(knownTypes func(string) bool) error {
 			}
 			if n == s.Key {
 				return fmt.Errorf("step %q needs itself", s.Key)
+			}
+		}
+		// Branch wiring: each label must hang off a needed condition predecessor.
+		// Acyclicity is unaffected — branches ride on existing needs, which
+		// checkAcyclic already walks.
+		if len(s.Branches) > 0 {
+			needed := make(map[string]bool, len(s.Needs))
+			for _, n := range s.Needs {
+				needed[n] = true
+			}
+			for pred, label := range s.Branches {
+				if !needed[pred] {
+					return fmt.Errorf("step %q branches on %q which is not in its needs", s.Key, pred)
+				}
+				if p := d.Step(pred); p == nil || p.Type != ConditionType {
+					return fmt.Errorf("step %q branches on %q which is not a %s step", s.Key, pred, ConditionType)
+				}
+				if label != "then" && label != "else" {
+					return fmt.Errorf("step %q has invalid branch label %q for %q (want then|else)", s.Key, label, pred)
+				}
 			}
 		}
 	}
