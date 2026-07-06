@@ -49,6 +49,59 @@ const DEFINITION = {
 	]
 };
 
+// A workflow whose canvas exercises the dynamic-select config kinds
+// (api_key / mcp_server / mcp_tool) so the Inspector's dynamic branch renders.
+const AI_DEFINITION = {
+	name: 'Daily Report',
+	steps: [
+		{
+			key: 'fetch',
+			type: 'http.request',
+			config: { url: 'https://api.example.com/orders', method: 'GET' },
+			ui: { x: 80, y: 160 }
+		},
+		{
+			key: 'summarize',
+			type: 'ai.prompt',
+			needs: ['fetch'],
+			config: {
+				api_key: 'my_anthropic',
+				model: 'claude-3-5-sonnet',
+				prompt: 'Summarize the orders in {{ steps.fetch.body }} for the daily report.',
+				server: 'github-tools',
+				tool: 'search_issues'
+			},
+			ui: { x: 380, y: 160 }
+		}
+	]
+};
+
+// Immutable version history for WF_ID (newest first).
+const VERSIONS = [
+	{ version: 4, created_at: '2026-06-11 16:30:00+00', step_count: 4, is_current: true },
+	{ version: 3, created_at: '2026-06-10 14:00:00+00', step_count: 4, is_current: false },
+	{ version: 2, created_at: '2026-06-05 11:00:00+00', step_count: 3, is_current: false },
+	{ version: 1, created_at: '2026-06-01 08:00:00+00', step_count: 2, is_current: false }
+];
+
+// Triggers for WF_ID: one schedule (enabled) + one signed webhook (disabled).
+const TRIGGERS = [
+	{
+		id: '99999999-0000-0000-0000-000000000001',
+		type: 'schedule',
+		config: { cron: '*/5 * * * *' },
+		is_enabled: true,
+		created_at: '2026-06-10 12:00:00+00'
+	},
+	{
+		id: '99999999-0000-0000-0000-000000000002',
+		type: 'webhook',
+		config: { path: 'orders-hook', secret: 's3cr3t' },
+		is_enabled: false,
+		created_at: '2026-06-11 09:30:00+00'
+	}
+];
+
 const STATS = {
 	totals: {
 		workflows: 2, runs: 47, succeeded: 37, failed: 9, canceled: 1, active: 0,
@@ -109,6 +162,7 @@ const WORKFLOWS = [
 ];
 
 const WORKFLOW_DETAIL = { ...WORKFLOWS[0], definition: DEFINITION };
+const WF2_DETAIL = { ...WORKFLOWS[1], definition: AI_DEFINITION };
 
 const RUNS = [
 	{
@@ -203,6 +257,159 @@ const RUN_DETAIL = {
 	]
 };
 
+// A run exercising the `skipped` status: `notify` has a falsy `if`, so the
+// engine skips it. Drives the skipped node border + badge styling.
+export const SKIP_RUN_ID = 'a5a5a5a5-a5a5-a5a5-a5a5-a5a5a5a5a5a5';
+
+const SKIP_DEFINITION = {
+	name: 'order-sync',
+	steps: [
+		{
+			key: 'fetch',
+			type: 'http.request',
+			config: { url: 'https://api.example.com/orders', method: 'GET' },
+			ui: { x: 80, y: 160 }
+		},
+		{
+			key: 'filter',
+			type: 'code.js',
+			needs: ['fetch'],
+			config: { script: 'return steps.fetch.body.orders.filter(o => o > 1)' },
+			ui: { x: 360, y: 160 }
+		},
+		{
+			key: 'notify',
+			type: 'code.js',
+			needs: ['filter'],
+			if: 'steps.filter.length > 5',
+			config: { script: 'console.log("notifying")' },
+			ui: { x: 640, y: 160 }
+		}
+	]
+};
+
+const SKIP_RUN_DETAIL = {
+	id: SKIP_RUN_ID,
+	workflow_id: WF_ID,
+	workflow_name: 'Order Sync',
+	version: 4,
+	definition: SKIP_DEFINITION,
+	status: 'succeeded',
+	input: null,
+	error: null,
+	created_at: '2026-06-12 08:45:00+00',
+	started_at: '2026-06-12 08:45:00.1+00',
+	finished_at: '2026-06-12 08:45:00.9+00',
+	tasks: [
+		{
+			id: 'a5a5a5a5-0000-0000-0000-000000000001',
+			step_key: 'fetch',
+			attempt: 1,
+			status: 'succeeded',
+			output: { status: 200, body: { orders: [1, 2, 3] } },
+			error: null,
+			queued_at: '2026-06-12 08:45:00.1+00',
+			started_at: '2026-06-12 08:45:00.2+00',
+			finished_at: '2026-06-12 08:45:00.4+00'
+		},
+		{
+			id: 'a5a5a5a5-0000-0000-0000-000000000002',
+			step_key: 'filter',
+			attempt: 1,
+			status: 'succeeded',
+			output: [2, 3],
+			error: null,
+			queued_at: '2026-06-12 08:45:00.4+00',
+			started_at: '2026-06-12 08:45:00.5+00',
+			finished_at: '2026-06-12 08:45:00.6+00'
+		},
+		{
+			id: 'a5a5a5a5-0000-0000-0000-000000000003',
+			step_key: 'notify',
+			attempt: 1,
+			status: 'skipped',
+			output: null,
+			error: null,
+			queued_at: '2026-06-12 08:45:00.6+00',
+			started_at: null,
+			finished_at: '2026-06-12 08:45:00.7+00'
+		}
+	]
+};
+
+// A run parked on a `wait.callback` step: the run stays `running` while the
+// `approve` task is `suspended` with a resume_url in its output. Drives the
+// amber suspended node + the "Waiting for callback" card.
+export const SUSPEND_RUN_ID = 'c0ffee00-0000-0000-0000-c0ffee000000';
+
+const SUSPEND_DEFINITION = {
+	name: 'order-sync',
+	steps: [
+		{
+			key: 'fetch',
+			type: 'http.request',
+			config: { url: 'https://api.example.com/orders', method: 'GET' },
+			ui: { x: 80, y: 160 }
+		},
+		{
+			key: 'approve',
+			type: 'wait.callback',
+			needs: ['fetch'],
+			config: { note: 'Approve the payout before continuing' },
+			ui: { x: 360, y: 160 }
+		},
+		{
+			key: 'notify',
+			type: 'code.js',
+			needs: ['approve'],
+			config: { script: 'console.log("approved")' },
+			ui: { x: 640, y: 160 }
+		}
+	]
+};
+
+const SUSPEND_RUN_DETAIL = {
+	id: SUSPEND_RUN_ID,
+	workflow_id: WF_ID,
+	workflow_name: 'Order Sync',
+	version: 4,
+	definition: SUSPEND_DEFINITION,
+	status: 'running',
+	input: null,
+	error: null,
+	created_at: '2026-06-12 09:00:00+00',
+	started_at: '2026-06-12 09:00:00.1+00',
+	finished_at: null,
+	tasks: [
+		{
+			id: 'c0ffee00-0000-0000-0000-000000000001',
+			step_key: 'fetch',
+			attempt: 1,
+			status: 'succeeded',
+			output: { status: 200, body: { orders: [1, 2, 3] } },
+			error: null,
+			queued_at: '2026-06-12 09:00:00.1+00',
+			started_at: '2026-06-12 09:00:00.2+00',
+			finished_at: '2026-06-12 09:00:00.4+00'
+		},
+		{
+			id: 'c0ffee00-0000-0000-0000-000000000002',
+			step_key: 'approve',
+			attempt: 1,
+			status: 'suspended',
+			output: {
+				resume_url: '/resume/rsm_7f3a9c1e4b2d',
+				waiting: true,
+				note: 'Approve the payout before continuing'
+			},
+			error: null,
+			queued_at: '2026-06-12 09:00:00.5+00',
+			started_at: '2026-06-12 09:00:00.55+00',
+			finished_at: null
+		}
+	]
+};
+
 const LOGS = [
 	{ id: 8, task_id: 'dddddddd-0000-0000-0000-000000000004', step_key: 'title', ts: '2026-06-12 09:00:02.700+00', level: 8, message: 'task failed', fields: { will_retry: false, error: 'transform: ReferenceError: tite is not defined' } },
 	{ id: 7, task_id: 'dddddddd-0000-0000-0000-000000000004', step_key: 'title', ts: '2026-06-12 09:00:02.650+00', level: 0, message: 'task started', fields: { type: 'transform' } },
@@ -231,6 +438,26 @@ const SECRETS = [
 		created_at: '2026-06-11 09:30:00+00'
 	}
 ];
+
+const API_TOKENS = [
+	{
+		id: 'a70e0000-0000-0000-0000-000000000001',
+		name: 'claude-desktop',
+		prefix: 'oak_5c84',
+		created_at: '2026-06-10 12:00:00+00',
+		last_used_at: '2026-06-12 08:55:00+00'
+	},
+	{
+		id: 'a70e0000-0000-0000-0000-000000000002',
+		name: 'ci-runner',
+		prefix: 'oak_9a2f',
+		created_at: '2026-06-01 08:00:00+00',
+		last_used_at: null
+	}
+];
+
+// Deterministic raw token surfaced once by the create-token dialog.
+const NEW_TOKEN = 'oak_1234567890abcdef1234567890abcdef1234567890abcdef';
 
 const MCP_SERVERS = [
 	{
@@ -284,6 +511,32 @@ const STEP_TYPES = [
 		label: 'Delay',
 		description: 'Wait a fixed duration before continuing',
 		config_spec: [{ key: 'seconds', label: 'Seconds', kind: 'number', placeholder: '5', required: true }]
+	},
+	{
+		type: 'code.js',
+		label: 'Code (JS)',
+		description: 'Run JavaScript with console.log captured to the task log',
+		config_spec: [
+			{
+				key: 'script',
+				label: 'Script',
+				kind: 'text',
+				placeholder: 'const items = steps.fetch.body.items\nreturn items.filter(i => i.active)',
+				required: true
+			}
+		]
+	},
+	{
+		type: 'ai.prompt',
+		label: 'AI Prompt',
+		description: 'Send a prompt to an LLM, optionally with MCP tools',
+		config_spec: [
+			{ key: 'api_key', label: 'API Key', kind: 'api_key', required: true },
+			{ key: 'model', label: 'Model', kind: 'select', options: ['claude-3-5-sonnet', 'gpt-4o'] },
+			{ key: 'prompt', label: 'Prompt', kind: 'text', placeholder: 'Summarize {{ steps.fetch.body }}', required: true },
+			{ key: 'server', label: 'MCP Server', kind: 'mcp_server' },
+			{ key: 'tool', label: 'Tool', kind: 'mcp_tool' }
+		]
 	}
 ];
 
@@ -294,6 +547,7 @@ export async function mockApi(page: Page) {
 			return route.fulfill({ status: 204, headers: CORS });
 		}
 		const path = new URL(request.url()).pathname;
+		const method = request.method();
 		const json = (body: unknown) =>
 			route.fulfill({
 				status: 200,
@@ -301,27 +555,90 @@ export async function mockApi(page: Page) {
 				body: JSON.stringify(body)
 			});
 
+		// --- mutations (branch on method before the GET routes) ---
+		if (method === 'PATCH' && /^\/v1\/workflows\/[^/]+$/.test(path)) {
+			const id = path.split('/').pop()!;
+			const patch = JSON.parse(request.postData() || '{}');
+			const wf = [WORKFLOW_DETAIL, WF2_DETAIL].find((w) => w.id === id) ?? WORKFLOW_DETAIL;
+			return json({
+				id,
+				name: patch.name ?? wf.name,
+				is_enabled: patch.is_enabled ?? wf.is_enabled
+			});
+		}
+		if (method === 'PUT' && /^\/v1\/secrets\/[^/]+$/.test(path)) {
+			return json({ id: path.split('/').pop() });
+		}
+		// Trigger mutations: create / patch / delete.
+		if (method === 'POST' && /^\/v1\/workflows\/[^/]+\/triggers$/.test(path)) {
+			return route.fulfill({
+				status: 201,
+				headers: { ...CORS, 'content-type': 'application/json' },
+				body: JSON.stringify({ id: '99999999-0000-0000-0000-00000000000f' })
+			});
+		}
+		if (method === 'PATCH' && /^\/v1\/triggers\/[^/]+$/.test(path)) {
+			return json({ id: path.split('/').pop() });
+		}
+		if (method === 'DELETE' && /^\/v1\/triggers\/[^/]+$/.test(path)) {
+			return route.fulfill({ status: 204, headers: CORS });
+		}
+		// API tokens: create returns the raw token once; delete is a no-op 204.
+		if (method === 'POST' && path === '/v1/api-tokens') {
+			return route.fulfill({
+				status: 201,
+				headers: { ...CORS, 'content-type': 'application/json' },
+				body: JSON.stringify({ id: 'a70e0000-0000-0000-0000-0000000000ff', token: NEW_TOKEN })
+			});
+		}
+		if (method === 'DELETE' && /^\/v1\/api-tokens\/[^/]+$/.test(path)) {
+			return route.fulfill({ status: 204, headers: CORS });
+		}
+
 		if (path === '/v1/me') {
 			return json({
 				user: { id: '00000000-0000-0000-0000-000000000002', email: 'dev@localhost', name: 'Dev User' },
-				workspace: { id: '00000000-0000-0000-0000-000000000001', name: 'Default Workspace' },
-				role: 'owner'
+				workspace: { id: '00000000-0000-0000-0000-000000000001', name: 'Default Workspace', slug: 'default' },
+				role: 'owner',
+				vault: { dev_key: false }
 			});
 		}
 		if (path === '/v1/stats') return json(STATS);
+		if (path === '/v1/api-tokens') return json(API_TOKENS);
 		if (path === '/v1/workflows') return json(WORKFLOWS);
 		if (path === '/v1/step-types') return json(STEP_TYPES);
 		if (path === '/v1/secrets') return json(SECRETS);
+		if (path === '/v1/mcp-servers/test') return json(MCP_TOOLS);
 		if (path === '/v1/mcp-servers') return json(MCP_SERVERS);
 		if (/^\/v1\/mcp-servers\/[^/]+\/tools$/.test(path)) return json(MCP_TOOLS);
+		if (path === `/v1/workflows/${WF_ID}/triggers`) return json(TRIGGERS);
+		if (/^\/v1\/workflows\/[^/]+\/triggers$/.test(path)) return json([]);
+		if (path === `/v1/workflows/${WF_ID}/versions`) return json(VERSIONS);
+		if (/^\/v1\/workflows\/[^/]+\/versions\/\d+$/.test(path)) {
+			const version = Number(path.split('/').pop());
+			return json({ version, created_at: '2026-06-11 16:30:00+00', definition: DEFINITION });
+		}
 		if (path === `/v1/workflows/${WF_ID}`) return json(WORKFLOW_DETAIL);
+		if (path === `/v1/workflows/${WF2_ID}`) return json(WF2_DETAIL);
 		if (path === `/v1/workflows/${WF_ID}/runs`) return json(RUNS);
+		if (path === `/v1/runs/${RUN_ID}`) return json(RUN_DETAIL);
+		if (path === `/v1/runs/${SKIP_RUN_ID}`) return json(SKIP_RUN_DETAIL);
+		if (path === `/v1/runs/${SUSPEND_RUN_ID}`) return json(SUSPEND_RUN_DETAIL);
 		if (path === `/v1/runs/${RUN_ID}/logs`) return json(LOGS);
 		if (path === `/v1/runs/${RUN_ID}/events`) {
 			return route.fulfill({
 				status: 200,
 				headers: { ...CORS, 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
 				body: `event: run\ndata: ${JSON.stringify(RUN_DETAIL)}\n\n`
+			});
+		}
+		if (path === `/v1/runs/${SUSPEND_RUN_ID}/events`) {
+			// The run is still running (a suspended task keeps it alive); a long
+			// retry keeps EventSource from reconnecting and churning networkidle.
+			return route.fulfill({
+				status: 200,
+				headers: { ...CORS, 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+				body: `retry: 3600000\nevent: run\ndata: ${JSON.stringify(SUSPEND_RUN_DETAIL)}\n\n`
 			});
 		}
 		return route.fulfill({ status: 404, headers: CORS, body: '{"error":"not mocked"}' });

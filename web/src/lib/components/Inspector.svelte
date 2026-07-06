@@ -13,8 +13,12 @@
 		stepTypes,
 		secrets = [],
 		mcpServers = [],
+		secretsError = false,
+		serversError = false,
 		onconfig,
 		onretries,
+		ontimeout,
+		onif,
 		onrename,
 		ondelete
 	}: {
@@ -22,9 +26,13 @@
 		stepTypes: StepType[];
 		secrets?: Secret[];
 		mcpServers?: MCPServer[];
+		secretsError?: boolean;
+		serversError?: boolean;
 		onconfig: (id: string, config: Record<string, unknown>) => void;
 		onretries: (id: string, retries: number) => void;
-		onrename: (oldId: string, newId: string) => void;
+		ontimeout: (id: string, timeout: number | undefined) => void;
+		onif: (id: string, condition: string | undefined) => void;
+		onrename: (oldId: string, newId: string) => boolean;
 		ondelete: (id: string) => void;
 	} = $props();
 
@@ -34,19 +42,32 @@
 		keyDraft = node.id;
 	});
 
-	// mcp_tool options depend on the selected server; fetched live.
+	// mcp_tool options depend on the selected server; fetched live. The `node`
+	// prop's identity changes on every keystroke, so key the fetch on the
+	// resolved server id — refetch only when it actually changes, and use a
+	// request token so an out-of-order response can't overwrite a newer one.
 	let toolOptions = $state<string[]>([]);
 	let toolsError = $state('');
+	let fetchedServerId: string | null = null;
+	let reqToken = 0;
 	$effect(() => {
 		const serverName = String(node.data.config['server'] ?? '');
+		const srv = mcpServers.find((m) => m.name === serverName);
+		const id = srv?.id ?? null;
+		if (id === fetchedServerId) return;
+		fetchedServerId = id;
 		toolOptions = [];
 		toolsError = '';
-		const srv = mcpServers.find((m) => m.name === serverName);
 		if (!srv) return;
+		const token = ++reqToken;
 		api
 			.mcpServerTools(srv.id)
-			.then((tools) => (toolOptions = tools.map((t) => t.name)))
-			.catch((e) => (toolsError = e instanceof Error ? e.message : String(e)));
+			.then((tools) => {
+				if (token === reqToken) toolOptions = tools.map((t) => t.name);
+			})
+			.catch((e) => {
+				if (token === reqToken) toolsError = e instanceof Error ? e.message : String(e);
+			});
 	});
 
 	function optionsFor(kind: string): string[] {
@@ -57,8 +78,14 @@
 	}
 
 	function emptyHintFor(kind: string): string {
-		if (kind === 'api_key') return 'No API-key secrets yet — add one under Configuration.';
-		if (kind === 'mcp_server') return 'No MCP servers yet — add one under MCP Servers.';
+		if (kind === 'api_key')
+			return secretsError
+				? "Couldn't load secrets — is the API reachable?"
+				: 'No API-key secrets yet — add one under Configuration.';
+		if (kind === 'mcp_server')
+			return serversError
+				? "Couldn't load MCP servers — is the API reachable?"
+				: 'No MCP servers yet — add one under MCP Servers.';
 		if (kind === 'mcp_tool') return toolsError ? `Server unreachable: ${toolsError}` : 'Pick a server first.';
 		return 'No options.';
 	}
@@ -69,8 +96,12 @@
 
 	function commitRename() {
 		const next = keyDraft.trim().replace(/[^a-zA-Z0-9_-]+/g, '_');
-		if (next && next !== node.id) onrename(node.id, next);
-		else keyDraft = node.id;
+		// Revert the draft when the rename is a no-op or rejected (duplicate key).
+		if (next && next !== node.id) {
+			if (!onrename(node.id, next)) keyDraft = node.id;
+		} else {
+			keyDraft = node.id;
+		}
 	}
 </script>
 
@@ -165,19 +196,53 @@
 			</label>
 		{/each}
 
+		<div class="grid grid-cols-2 gap-3">
+			<label class="block">
+				<span class="text-muted-foreground text-xs">Retries (0–10)</span>
+				<Input
+					type="number"
+					min={0}
+					max={10}
+					value={node.data.retries == null ? '' : String(node.data.retries)}
+					oninput={(e: Event) => {
+						const raw = (e.target as HTMLInputElement).value;
+						onretries(node.id, raw === '' ? 0 : Math.max(0, Math.min(10, Number(raw))));
+					}}
+					class="mt-1"
+				/>
+			</label>
+			<label class="block">
+				<span class="text-muted-foreground text-xs">Timeout (seconds)</span>
+				<Input
+					type="number"
+					min={0}
+					max={600}
+					placeholder="executor default"
+					value={node.data.timeout == null ? '' : String(node.data.timeout)}
+					oninput={(e: Event) => {
+						const raw = (e.target as HTMLInputElement).value;
+						ontimeout(node.id, raw === '' ? undefined : Math.max(0, Math.min(600, Number(raw))));
+					}}
+					class="mt-1"
+				/>
+			</label>
+		</div>
+
 		<label class="block">
-			<span class="text-muted-foreground text-xs">Retries on failure (0–10)</span>
+			<span class="text-muted-foreground text-xs">Run condition (if)</span>
 			<Input
-				type="number"
-				min={0}
-				max={10}
-				value={node.data.retries == null ? '' : String(node.data.retries)}
+				placeholder="steps.check.status === 200"
+				value={node.data.if ?? ''}
 				oninput={(e: Event) => {
 					const raw = (e.target as HTMLInputElement).value;
-					onretries(node.id, raw === '' ? 0 : Math.max(0, Math.min(10, Number(raw))));
+					onif(node.id, raw.trim() === '' ? undefined : raw);
 				}}
-				class="mt-1"
+				class="mt-1 font-mono text-xs"
 			/>
+			<span class="text-muted-foreground/70 mt-1 block text-[11px] leading-relaxed">
+				JS expression; falsy skips this step. Sees input and upstream step outputs (no secrets).
+				Empty = always run.
+			</span>
 		</label>
 
 		<p class="text-muted-foreground/70 text-[11px] leading-relaxed">

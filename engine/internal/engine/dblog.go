@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	maxLogLine  = 8 << 10  // 8KB per line, truncated
-	maxTaskLogs = 1 << 20  // ~1MB per task, then dropped
+	maxLogLine  = 8 << 10 // 8KB per line, truncated
+	maxTaskLogs = 1 << 20 // ~1MB per task, then dropped
 )
 
 // taskLogHandler is the default log sink for every task: lines go to the

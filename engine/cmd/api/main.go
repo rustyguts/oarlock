@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -47,13 +48,16 @@ func main() {
 	}
 	log.Info("migrations applied")
 
+	// Valkey is never load-bearing for correctness (Postgres is truth); it only
+	// speeds up live SSE updates. Keep the client on a failed ping — go-redis
+	// reconnects when it returns, and /healthz reports the degraded state.
 	cache := redis.NewClient(&redis.Options{Addr: valkeyAddr})
 	if err := cache.Ping(ctx).Err(); err != nil {
-		log.Error("valkey connect failed", "error", err)
-		os.Exit(1)
+		log.Warn("valkey unavailable at boot; continuing (live updates poll until it returns)", "error", err)
+	} else {
+		log.Info("connected to valkey")
 	}
 	defer cache.Close()
-	log.Info("connected to valkey")
 
 	// Secrets vault: BYOK connections + MCP server auth (hard rule 6).
 	v, err := vault.New(pool, os.Getenv("OARLOCK_MASTER_KEY"), log)
@@ -101,9 +105,31 @@ func main() {
 	srv := &api.Server{DB: pool, Engine: eng, Cache: cache, Vault: v, Log: log}
 	v1 := http.NewServeMux()
 	srv.Routes(v1)
-	mux.Handle("/v1/", srv.WithAuth(v1)) // session auth (auto-login bootstrap) on all API routes
+	// Body cap + session auth (auto-login bootstrap) on all API routes.
+	mux.Handle("/v1/", api.MaxBody(srv.WithAuth(v1)))
+	// Webhook ingress is UNAUTHENTICATED (external callers): body cap + CORS but
+	// no session auth. The workspace is resolved from the {ws} slug in the path.
+	mux.Handle("POST /hooks/{ws}/{path}", api.MaxBody(srv.WebhookHandler()))
+	// Callback resume is UNAUTHENTICATED (external approvers): body cap + CORS but
+	// no session auth. The unguessable resume token is the credential.
+	mux.Handle("POST /resume/{token}", api.MaxBody(srv.ResumeHandler()))
+	// Workspace MCP endpoint: body cap + CORS, but no session auth — the bearer
+	// API token is the workspace credential (see api.MCPHandler). One stable URL
+	// serves every workspace; the token scopes the request.
+	mcpHandler := api.MaxBody(srv.MCPHandler())
+	mux.Handle("/mcp", mcpHandler)
+	mux.Handle("/mcp/", mcpHandler)
 
-	httpSrv := &http.Server{Addr: addr, Handler: api.CORS(mux)}
+	// Credentialed CORS is restricted to an explicit origin allowlist.
+	allowedOrigins := strings.Split(envOr("OARLOCK_ALLOWED_ORIGINS", "http://localhost:3001"), ",")
+	httpSrv := &http.Server{
+		Addr:    addr,
+		Handler: api.CORS(allowedOrigins, mux),
+		// No WriteTimeout: it would kill long-lived SSE streams. Header and
+		// idle timeouts bound slow-loris and abandoned keep-alives.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	go func() {
 		log.Info("api listening", "addr", addr, "version", version)

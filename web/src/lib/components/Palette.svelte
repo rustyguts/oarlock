@@ -2,7 +2,7 @@
 	import type { StepType } from '$lib/api';
 	import { stepIcon } from '$lib/step-icons';
 
-	let { stepTypes }: { stepTypes: StepType[] } = $props();
+	let { stepTypes, onadd }: { stepTypes: StepType[]; onadd?: (type: string) => void } = $props();
 
 	function ondragstart(e: DragEvent, type: string) {
 		e.dataTransfer?.setData('application/oarlock-step', type);
@@ -15,16 +15,17 @@
 		Steps
 	</h2>
 	<p class="text-muted-foreground/60 mt-1 mb-3 px-1 text-xs leading-relaxed">
-		Drag a step onto the canvas
+		Drag onto the canvas, or click to add
 	</p>
 	<div class="space-y-2">
 		{#each stepTypes as st (st.type)}
 			{@const Icon = stepIcon(st.type)}
-			<div
-				role="listitem"
+			<button
+				type="button"
 				draggable="true"
 				ondragstart={(e) => ondragstart(e, st.type)}
-				class="group bg-card hover:border-primary/60 hover:shadow-sm flex cursor-grab items-start gap-3 rounded-lg border p-3 transition-all select-none active:cursor-grabbing"
+				onclick={() => onadd?.(st.type)}
+				class="group bg-card hover:border-primary/60 hover:shadow-sm flex w-full cursor-grab items-start gap-3 rounded-lg border p-3 text-left transition-all select-none active:cursor-grabbing"
 			>
 				<span
 					class="bg-primary/12 text-primary-strong group-hover:bg-primary/20 flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors"
@@ -37,7 +38,7 @@
 						{st.description}
 					</div>
 				</div>
-			</div>
+			</button>
 		{/each}
 	</div>
 </aside>

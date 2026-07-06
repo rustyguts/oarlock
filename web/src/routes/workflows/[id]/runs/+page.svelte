@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { api, type RunSummary, type Workflow } from '$lib/api';
-	import { statusBadges, fmtDuration, fmtRelative } from '$lib/flow';
+	import { statusBadges, fmtDuration, fmtRelative, fmtMS, pgDate } from '$lib/flow';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
@@ -20,9 +20,14 @@
 	import ZapIcon from '@lucide/svelte/icons/zap';
 
 	const workflowId = page.params.id!;
+	const PAGE_SIZE = 50;
 	let workflow = $state<Workflow | null>(null);
 	let runs = $state<RunSummary[]>([]);
 	let error = $state('');
+	let loading = $state(true);
+	// More older runs exist beyond the loaded set (last fetched page was full).
+	let hasMore = $state(false);
+	let loadingMore = $state(false);
 
 	let failurePct = $derived(
 		workflow && workflow.run_count > 0
@@ -36,24 +41,49 @@
 		const done = runs.filter((r) => r.started_at && r.finished_at);
 		if (!done.length) return '—';
 		const avg =
-			done.reduce(
-				(sum, r) =>
-					sum +
-					(new Date(r.finished_at!.replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00')).getTime() -
-						new Date(r.started_at!.replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00')).getTime()),
-				0
-			) / done.length;
-		return avg < 1000 ? `${Math.round(avg)}ms` : `${(avg / 1000).toFixed(1)}s`;
+			done.reduce((sum, r) => sum + (pgDate(r.finished_at!) - pgDate(r.started_at!)), 0) /
+			done.length;
+		return fmtMS(avg);
 	});
 
+	// Poll the newest page. Merge it over the loaded set so any older pages the
+	// user loaded stay put while statuses/new runs at the head refresh.
 	async function refresh() {
 		try {
-			const [wfs, rs] = await Promise.all([api.listWorkflows(), api.listRuns(workflowId)]);
-			workflow = wfs.find((w) => w.id === workflowId) ?? null;
-			runs = rs;
+			const [wf, head] = await Promise.all([
+				api.getWorkflow(workflowId),
+				api.listRuns(workflowId, { limit: PAGE_SIZE })
+			]);
+			workflow = wf;
+			const headIds = new Set(head.map((r) => r.id));
+			const older = runs.filter((r) => !headIds.has(r.id));
+			runs = [...head, ...older];
+			// Only the initial fetch establishes whether more pages exist; a head
+			// refresh can't shrink the loaded window, so preserve hasMore if we've
+			// already paged, otherwise derive it from this first full/short page.
+			if (older.length === 0) hasMore = head.length === PAGE_SIZE;
 			error = '';
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function loadMore() {
+		if (loadingMore || runs.length === 0) return;
+		loadingMore = true;
+		try {
+			const before = runs[runs.length - 1].id;
+			const older = await api.listRuns(workflowId, { limit: PAGE_SIZE, before });
+			const seen = new Set(runs.map((r) => r.id));
+			runs = [...runs, ...older.filter((r) => !seen.has(r.id))];
+			hasMore = older.length === PAGE_SIZE;
+			error = '';
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			loadingMore = false;
 		}
 	}
 
@@ -144,7 +174,9 @@
 		</div>
 	{/if}
 
-	{#if runs.length === 0}
+	{#if loading}
+		<p class="text-muted-foreground text-sm">Loading…</p>
+	{:else if runs.length === 0}
 		<Card.Root class="border-dashed">
 			<Card.Content class="text-muted-foreground py-10 text-center">
 				No runs yet. Open the editor and hit Run.
@@ -183,5 +215,16 @@
 				{/each}
 			</Card.Content>
 		</Card.Root>
+		{#if hasMore}
+			<div class="mt-4 flex justify-center">
+				<Button variant="outline" onclick={loadMore} disabled={loadingMore}>
+					{#if loadingMore}
+						<LoaderIcon class="size-4 animate-spin" /> Loading…
+					{:else}
+						Load more
+					{/if}
+				</Button>
+			</div>
+		{/if}
 	{/if}
 </div>

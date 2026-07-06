@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, type Stats } from '$lib/api';
-	import { statusBadges, fmtRelative, fmtDuration } from '$lib/flow';
+	import { statusBadges, fmtRelative, fmtDuration, fmtMS } from '$lib/flow';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
@@ -37,13 +37,6 @@
 	let maxDaily = $derived(
 		stats ? Math.max(1, ...stats.daily.map((d) => d.succeeded + d.failed + d.canceled)) : 1
 	);
-
-	function fmtMS(ms: number | null): string {
-		if (ms == null) return '—';
-		if (ms < 1000) return `${ms}ms`;
-		if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-		return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
-	}
 
 	function dayLabel(date: string): string {
 		return date.slice(8, 10);
@@ -248,6 +241,10 @@
 								</div>
 								<ChevronRightIcon class="text-muted-foreground/40 size-4 shrink-0" />
 							</a>
+						{:else}
+							<div class="text-muted-foreground/70 flex flex-1 items-center justify-center px-4 py-8 text-center text-sm">
+								No workflow runs yet.
+							</div>
 						{/each}
 					</div>
 				</Card.Content>
@@ -277,6 +274,10 @@
 									<div>{fmtDuration(run.started_at, run.finished_at)}</div>
 								</div>
 							</a>
+						{:else}
+							<div class="text-muted-foreground/70 flex flex-1 items-center justify-center px-4 py-8 text-center text-sm">
+								No activity yet.
+							</div>
 						{/each}
 					</div>
 				</Card.Content>

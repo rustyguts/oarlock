@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -84,6 +85,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, registry *steps.Registry, cach
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &advanceRunWorker{e: e})
 	river.AddWorker(workers, &executeTaskWorker{e: e})
+	river.AddWorker(workers, &resumeTaskWorker{e: e})
 
 	client, err := river.NewClient(driver, &river.Config{
 		Queues: map[string]river.QueueConfig{
@@ -100,15 +102,45 @@ func New(ctx context.Context, pool *pgxpool.Pool, registry *steps.Registry, cach
 	return e, nil
 }
 
-func (e *Engine) Start(ctx context.Context) error { return e.Client.Start(ctx) }
-func (e *Engine) Stop(ctx context.Context) error  { return e.Client.Stop(ctx) }
+func (e *Engine) Start(ctx context.Context) error {
+	if err := e.Client.Start(ctx); err != nil {
+		return err
+	}
+	go e.runReaper(ctx)    // exits on ctx cancellation (same lifetime as the client)
+	go e.runScheduler(ctx) // fires schedule triggers; exits on ctx cancellation
+	return nil
+}
+func (e *Engine) Stop(ctx context.Context) error { return e.Client.Stop(ctx) }
+
+// RunOpts carries optional provenance/dedup fields for StartRunOpts. The zero
+// value reproduces the old StartRun behavior (untriggered, non-idempotent run).
+type RunOpts struct {
+	// TriggerID records which trigger fired this run (nil for manual API runs).
+	TriggerID *uuid.UUID
+	// IdempotencyKey, when non-empty, dedupes runs within a workspace via the
+	// unique (workspace_id, idempotency_key) index: a second start with the
+	// same key is a silent no-op returning the existing run (created=false).
+	IdempotencyKey string
+}
 
 // StartRun creates a run for the workflow's current version and enqueues the
 // first advance_run — run row and job in one transaction.
 func (e *Engine) StartRun(ctx context.Context, workspaceID, workflowID uuid.UUID, input map[string]any) (uuid.UUID, error) {
+	runID, _, err := e.StartRunOpts(ctx, workspaceID, workflowID, input, RunOpts{})
+	return runID, err
+}
+
+// StartRunOpts creates a run for the workflow's current version and enqueues the
+// first advance_run — run row and job in one transaction (hard rule 2). When
+// opts.IdempotencyKey is set it inserts on-conflict-do-nothing against the
+// (workspace_id, idempotency_key) unique index: on a fresh key created=true and
+// the advance job is enqueued; on a replay created=false and the existing run's
+// id is returned with no new job. This makes multi-replica trigger firing safe
+// with zero locks — a lost race is a silent no-op.
+func (e *Engine) StartRunOpts(ctx context.Context, workspaceID, workflowID uuid.UUID, input map[string]any, opts RunOpts) (uuid.UUID, bool, error) {
 	tx, err := e.Pool.Begin(ctx)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 	defer tx.Rollback(ctx)
 
@@ -118,32 +150,63 @@ func (e *Engine) StartRun(ctx context.Context, workspaceID, workflowID uuid.UUID
 		where id = $1 and workspace_id = $2 and current_version_id is not null`,
 		workflowID, workspaceID).Scan(&versionID)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
+	}
+
+	var key *string
+	if opts.IdempotencyKey != "" {
+		key = &opts.IdempotencyKey
 	}
 
 	var runID uuid.UUID
-	err = tx.QueryRow(ctx, `
-		insert into runs (workspace_id, workflow_id, workflow_version_id, status, input)
-		values ($1, $2, $3, 'queued', $4)
-		returning id`,
-		workspaceID, workflowID, versionID, inputJSON).Scan(&runID)
-	if err != nil {
-		return uuid.Nil, err
+	if key != nil {
+		// on-conflict-do-nothing returns no row when the key already exists;
+		// that's the replay path — select the existing run and skip the job.
+		err = tx.QueryRow(ctx, `
+			insert into runs (workspace_id, workflow_id, workflow_version_id, status, input, trigger_id, idempotency_key)
+			values ($1, $2, $3, 'queued', $4, $5, $6)
+			on conflict (workspace_id, idempotency_key) do nothing
+			returning id`,
+			workspaceID, workflowID, versionID, inputJSON, opts.TriggerID, key).Scan(&runID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			var existing uuid.UUID
+			if err := tx.QueryRow(ctx, `
+				select id from runs where workspace_id = $1 and idempotency_key = $2`,
+				workspaceID, opts.IdempotencyKey).Scan(&existing); err != nil {
+				return uuid.Nil, false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return uuid.Nil, false, err
+			}
+			return existing, false, nil
+		}
+		if err != nil {
+			return uuid.Nil, false, err
+		}
+	} else {
+		err = tx.QueryRow(ctx, `
+			insert into runs (workspace_id, workflow_id, workflow_version_id, status, input, trigger_id)
+			values ($1, $2, $3, 'queued', $4, $5)
+			returning id`,
+			workspaceID, workflowID, versionID, inputJSON, opts.TriggerID).Scan(&runID)
+		if err != nil {
+			return uuid.Nil, false, err
+		}
 	}
 
 	if _, err := e.Client.InsertTx(ctx, tx, AdvanceRunArgs{RunID: runID}, nil); err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 	e.notify(ctx, runID)
-	return runID, nil
+	return runID, true, nil
 }
 
 // CancelRun marks a non-terminal run and its pending tasks canceled. An

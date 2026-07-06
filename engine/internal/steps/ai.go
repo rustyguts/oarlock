@@ -36,13 +36,14 @@ func (e *AIPrompt) Execute(ctx context.Context, in TaskInput) (TaskOutput, error
 
 	in.Log.Info("ai prompt", "provider", provider, "model", model)
 	var text string
+	var usage *tokenUsage
 	switch provider {
 	case "anthropic":
-		text, err = anthropicMessage(ctx, key, model, system, prompt, maxTokens)
+		text, usage, err = anthropicMessage(ctx, key, model, system, prompt, maxTokens)
 	case "openai":
-		text, err = openAIChat(ctx, "https://api.openai.com/v1/chat/completions", key, model, system, prompt, maxTokens)
+		text, usage, err = openAIChat(ctx, "https://api.openai.com/v1/chat/completions", key, model, system, prompt, maxTokens)
 	case "openrouter":
-		text, err = openAIChat(ctx, "https://openrouter.ai/api/v1/chat/completions", key, model, system, prompt, maxTokens)
+		text, usage, err = openAIChat(ctx, "https://openrouter.ai/api/v1/chat/completions", key, model, system, prompt, maxTokens)
 	default:
 		return TaskOutput{}, fmt.Errorf("ai.prompt: api key %q has unsupported provider %q", keyName, provider)
 	}
@@ -50,10 +51,20 @@ func (e *AIPrompt) Execute(ctx context.Context, in TaskInput) (TaskOutput, error
 		return TaskOutput{}, fmt.Errorf("ai.prompt: %w", err)
 	}
 	in.Log.Info("ai prompt done", "provider", provider, "chars", len(text))
-	return TaskOutput{Data: map[string]any{"text": text, "model": model, "provider": provider}}, nil
+	data := map[string]any{"text": text, "model": model, "provider": provider}
+	if usage != nil {
+		data["usage"] = usage
+	}
+	return TaskOutput{Data: data}, nil
 }
 
-func anthropicMessage(ctx context.Context, key, model, system, prompt string, maxTokens int) (string, error) {
+// tokenUsage normalizes the per-provider usage object for later metering.
+type tokenUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+func anthropicMessage(ctx context.Context, key, model, system, prompt string, maxTokens int) (string, *tokenUsage, error) {
 	body := map[string]any{
 		"model":      model,
 		"max_tokens": maxTokens,
@@ -67,26 +78,34 @@ func anthropicMessage(ctx context.Context, key, model, system, prompt string, ma
 		"anthropic-version": "2023-06-01",
 	})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var resp struct {
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", err
+		return "", nil, err
+	}
+	var usage *tokenUsage
+	if resp.Usage != nil {
+		usage = &tokenUsage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens}
 	}
 	for _, c := range resp.Content {
 		if c.Type == "text" {
-			return c.Text, nil
+			return c.Text, usage, nil
 		}
 	}
-	return "", fmt.Errorf("anthropic: no text content in response")
+	return "", nil, fmt.Errorf("anthropic: no text content in response")
 }
 
-func openAIChat(ctx context.Context, url, key, model, system, prompt string, maxTokens int) (string, error) {
+func openAIChat(ctx context.Context, url, key, model, system, prompt string, maxTokens int) (string, *tokenUsage, error) {
 	messages := []map[string]any{}
 	if system != "" {
 		messages = append(messages, map[string]any{"role": "system", "content": system})
@@ -98,7 +117,7 @@ func openAIChat(ctx context.Context, url, key, model, system, prompt string, max
 		"messages":              messages,
 	}, map[string]string{"Authorization": "Bearer " + key})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var resp struct {
 		Choices []struct {
@@ -106,14 +125,22 @@ func openAIChat(ctx context.Context, url, key, model, system, prompt string, max
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
+		return "", nil, fmt.Errorf("no choices in response")
 	}
-	return resp.Choices[0].Message.Content, nil
+	var usage *tokenUsage
+	if resp.Usage != nil {
+		usage = &tokenUsage{InputTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.CompletionTokens}
+	}
+	return resp.Choices[0].Message.Content, usage, nil
 }
 
 func postJSON(ctx context.Context, url string, body any, headers map[string]string) ([]byte, error) {

@@ -9,6 +9,7 @@
 	import { Label } from '$lib/components/ui/label/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
@@ -34,6 +35,9 @@
 	let testing = $state(false);
 	let testResult = $state<MCPToolInfo[] | null>(null);
 	let testError = $state('');
+
+	let confirmOpen = $state(false);
+	let pendingDelete = $state<MCPServer | null>(null);
 
 	// per-server discovered tool counts (lazy, after list load)
 	let toolCounts = $state<Record<string, number | 'error'>>({});
@@ -80,7 +84,9 @@
 		open = true;
 	}
 
-	async function save() {
+	async function save(e?: SubmitEvent) {
+		e?.preventDefault();
+		if (saving || !name.trim() || !url.trim()) return;
 		saving = true;
 		dialogError = '';
 		try {
@@ -107,26 +113,21 @@
 		}
 	}
 
-	// Test connection: save-less for edits isn't possible (the server holds the
-	// secret), so for new entries we create→test→keep, and surface tools live.
+	// Test connection statelessly — probe the endpoint without persisting a
+	// server. When editing an authed server without re-entering the header, fall
+	// back to the stored server's live tool list (the plaintext auth is gone).
 	async function testConnection() {
 		testing = true;
 		testError = '';
 		testResult = null;
 		try {
-			if (editing) {
+			if (editing && authHeader.trim() === '') {
 				testResult = await api.mcpServerTools(editing.id);
 			} else {
-				const { id } = await api.createMCPServer({
-					name: name.trim() || 'untitled',
+				testResult = await api.mcpTest({
 					url: url.trim(),
 					...(authHeader.trim() !== '' ? { auth_header: authHeader.trim() } : {})
 				});
-				try {
-					testResult = await api.mcpServerTools(id);
-				} finally {
-					await api.deleteMCPServer(id).catch(() => {});
-				}
 			}
 		} catch (e) {
 			testError = e instanceof Error ? e.message : String(e);
@@ -135,8 +136,14 @@
 		}
 	}
 
-	async function remove(srv: MCPServer) {
-		if (!confirm(`Remove MCP server "${srv.name}"?`)) return;
+	function remove(srv: MCPServer) {
+		pendingDelete = srv;
+		confirmOpen = true;
+	}
+
+	async function confirmDelete() {
+		const srv = pendingDelete;
+		if (!srv) return;
 		try {
 			await api.deleteMCPServer(srv.id);
 			error = '';
@@ -187,7 +194,7 @@
 					<Card.Content class="flex items-center gap-4 px-4">
 						<div
 							class="flex size-10 shrink-0 items-center justify-center rounded-lg
-							{srv.is_enabled ? 'bg-primary/15 text-primary-foreground dark:text-primary' : 'bg-muted text-muted-foreground'}"
+							{srv.is_enabled ? 'bg-primary/15 text-primary-strong' : 'bg-muted text-muted-foreground'}"
 						>
 							<ServerIcon class="size-5" />
 						</div>
@@ -244,14 +251,15 @@
 
 <Dialog.Root bind:open>
 	<Dialog.Content class="sm:max-w-md">
-		<Dialog.Header>
-			<Dialog.Title>{editing ? 'Edit MCP server' : 'Add MCP server'}</Dialog.Title>
-			<Dialog.Description>
-				Streamable-HTTP MCP endpoint. Tools become available to workflow steps.
-			</Dialog.Description>
-		</Dialog.Header>
+		<form class="contents" onsubmit={save}>
+			<Dialog.Header>
+				<Dialog.Title>{editing ? 'Edit MCP server' : 'Add MCP server'}</Dialog.Title>
+				<Dialog.Description>
+					Streamable-HTTP MCP endpoint. Tools become available to workflow steps.
+				</Dialog.Description>
+			</Dialog.Header>
 
-		<div class="space-y-4">
+			<div class="space-y-4">
 			<div class="space-y-1.5">
 				<Label for="mcp-name">Name</Label>
 				<Input id="mcp-name" bind:value={name} placeholder="github-tools" />
@@ -306,17 +314,28 @@
 			{/if}
 		</div>
 
-		<Dialog.Footer class="gap-2">
-			<Button variant="outline" onclick={testConnection} disabled={testing || !url.trim()}>
-				{#if testing}
-					<LoaderIcon class="size-4 animate-spin" /> Testing…
-				{:else}
-					<PlugZapIcon class="size-4" /> Test connection
-				{/if}
-			</Button>
-			<Button onclick={save} disabled={saving || !name.trim() || !url.trim()}>
-				{saving ? 'Saving…' : editing ? 'Save changes' : 'Add server'}
-			</Button>
-		</Dialog.Footer>
+			<Dialog.Footer class="gap-2">
+				<Button type="button" variant="outline" onclick={testConnection} disabled={testing || !url.trim()}>
+					{#if testing}
+						<LoaderIcon class="size-4 animate-spin" /> Testing…
+					{:else}
+						<PlugZapIcon class="size-4" /> Test connection
+					{/if}
+				</Button>
+				<Button type="submit" disabled={saving || !name.trim() || !url.trim()}>
+					{saving ? 'Saving…' : editing ? 'Save changes' : 'Add server'}
+				</Button>
+			</Dialog.Footer>
+		</form>
 	</Dialog.Content>
 </Dialog.Root>
+
+<ConfirmDialog
+	bind:open={confirmOpen}
+	title="Remove MCP server?"
+	description={pendingDelete
+		? `"${pendingDelete.name}" will be removed from this workspace.`
+		: ''}
+	confirmText="Remove"
+	onconfirm={confirmDelete}
+/>

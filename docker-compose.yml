@@ -37,6 +37,8 @@ services:
       VALKEY_ADDR: valkey:6379
       # dev-only key; generate your own for real deployments: openssl rand -hex 32
       OARLOCK_MASTER_KEY: 8c1f2c9f3a4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7
+      # credentialed CORS allowlist (comma-separated exact origins); default shown
+      OARLOCK_ALLOWED_ORIGINS: http://localhost:3001
     ports:
       - "9000:9000"
     depends_on:

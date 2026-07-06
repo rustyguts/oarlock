@@ -1,5 +1,10 @@
 import { test, expect, type Page } from '@playwright/test';
-import { mockApi, WF_ID, RUN_ID } from './mock-api';
+import { mockApi, WF_ID, WF2_ID, RUN_ID, SKIP_RUN_ID, SUSPEND_RUN_ID } from './mock-api';
+
+const CORS = {
+	'access-control-allow-origin': 'http://localhost:4173',
+	'access-control-allow-credentials': 'true'
+};
 
 // Visual regression suite. Any intentional UI change requires regenerating
 // baselines with `npm run test:ui:update` and committing the diff — an
@@ -57,6 +62,67 @@ test('editor canvas with inspector', async ({ page }) => {
 	await page.waitForSelector('aside:has-text("Step key")');
 	await settle(page);
 	await expect(page).toHaveScreenshot('editor-inspector.png');
+});
+
+test('editor — version history panel', async ({ page }) => {
+	await page.goto(`/workflows/${WF_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 4);
+	await page.click('button[aria-label="Version history"]');
+	await page.waitForSelector('text=Version history');
+	await page.waitForSelector('text=current'); // the sheet's is_current badge
+	await settle(page);
+	await expect(page).toHaveScreenshot('version-history.png');
+});
+
+test('editor — triggers panel', async ({ page }) => {
+	await page.goto(`/workflows/${WF_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 4);
+	await page.click('button[aria-label="Triggers"]');
+	await page.waitForSelector('text=*/5 * * * *'); // schedule summary
+	await page.waitForSelector('text=/orders-hook'); // webhook summary
+	await settle(page);
+	await expect(page).toHaveScreenshot('triggers-panel.png');
+});
+
+test('editor — triggers panel, dark', async ({ page }) => {
+	await page.emulateMedia({ colorScheme: 'dark' });
+	await page.goto(`/workflows/${WF_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 4);
+	await page.click('button[aria-label="Triggers"]');
+	await page.waitForSelector('text=*/5 * * * *');
+	await settle(page);
+	await expect(page).toHaveScreenshot('triggers-panel-dark.png');
+});
+
+test('editor — add webhook trigger dialog', async ({ page }) => {
+	await page.goto(`/workflows/${WF_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 4);
+	await page.click('button[aria-label="Triggers"]');
+	await page.click('button:has-text("Add trigger")');
+	await page.click('button:has-text("Webhook")');
+	await page.waitForSelector('input[placeholder="my-hook"]');
+	await settle(page);
+	await expect(page).toHaveScreenshot('triggers-add-webhook.png');
+});
+
+test('run detail — skipped node', async ({ page }) => {
+	await page.goto(`/runs/${SKIP_RUN_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 3);
+	await page.click('.svelte-flow__node:has-text("notify")');
+	await page.waitForSelector('aside:has-text("Attempt 1")');
+	await settle(page);
+	await expect(page).toHaveScreenshot('run-detail-skipped.png');
+});
+
+test('editor inspector — ai.prompt dynamic selects', async ({ page }) => {
+	await page.goto(`/workflows/${WF2_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 2);
+	await page.click('.svelte-flow__node:has-text("summarize")');
+	await page.waitForSelector('aside:has-text("API Key")');
+	await page.waitForSelector('aside:has-text("my_anthropic")'); // api_key select populated
+	await page.waitForSelector('aside:has-text("search_issues")'); // mcp_tool list resolved
+	await settle(page);
+	await expect(page).toHaveScreenshot('editor-inspector-ai.png');
 });
 
 test('editor canvas — dark', async ({ page }) => {
@@ -129,4 +195,75 @@ test('configuration — secrets list', async ({ page }) => {
 	await page.waitForSelector('text=webhook_token');
 	await settle(page);
 	await expect(page).toHaveScreenshot('configuration-secrets.png');
+});
+
+test('mcp access — token list', async ({ page }) => {
+	await page.goto('/api-access');
+	await page.waitForSelector('text=MCP endpoint URL');
+	await page.waitForSelector('text=claude-desktop');
+	await page.waitForSelector('text=ci-runner');
+	await settle(page);
+	await expect(page).toHaveScreenshot('api-access-tokens.png');
+});
+
+test('mcp access — token list, dark', async ({ page }) => {
+	await page.emulateMedia({ colorScheme: 'dark' });
+	await page.goto('/api-access');
+	await page.waitForSelector('text=claude-desktop');
+	await settle(page);
+	await expect(page).toHaveScreenshot('api-access-tokens-dark.png');
+});
+
+test('mcp access — empty state', async ({ page }) => {
+	// Override just the tokens list to be empty (registered after mockApi, so it
+	// wins). Everything else on the page stays mocked.
+	await page.route('**/v1/api-tokens', (route) =>
+		route.request().method() === 'GET'
+			? route.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/json' }, body: '[]' })
+			: route.fallback()
+	);
+	await page.goto('/api-access');
+	await page.waitForSelector('text=No tokens yet.');
+	await settle(page);
+	await expect(page).toHaveScreenshot('api-access-empty.png');
+});
+
+test('mcp access — token shown once dialog', async ({ page }) => {
+	await page.goto('/api-access');
+	await page.waitForSelector('text=claude-desktop');
+	await page.click('button:has-text("Create token")');
+	await page.fill('#token-name', 'my-agent');
+	await page.locator('[role="dialog"] button[type="submit"]').click();
+	await page.waitForSelector('text=Token created');
+	await page.waitForSelector('text=Shown once');
+	await settle(page);
+	await expect(page).toHaveScreenshot('api-access-token-shown.png');
+});
+
+test('run detail — suspended node badge', async ({ page }) => {
+	await page.goto(`/runs/${SUSPEND_RUN_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 3);
+	await page.waitForSelector('.svelte-flow__node:has-text("waiting")'); // amber suspended label
+	await settle(page);
+	await expect(page).toHaveScreenshot('run-detail-suspended-node.png');
+});
+
+test('run detail — waiting-for-callback card', async ({ page }) => {
+	await page.goto(`/runs/${SUSPEND_RUN_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 3);
+	await page.click('.svelte-flow__node:has-text("approve")');
+	await page.waitForSelector('text=Waiting for callback');
+	await page.waitForSelector('text=Resume URL'); // resume URL block rendered
+	await settle(page);
+	await expect(page).toHaveScreenshot('run-detail-suspended-card.png');
+});
+
+test('run detail — waiting-for-callback card, dark', async ({ page }) => {
+	await page.emulateMedia({ colorScheme: 'dark' });
+	await page.goto(`/runs/${SUSPEND_RUN_ID}`);
+	await page.waitForFunction(() => document.querySelectorAll('.svelte-flow__node').length === 3);
+	await page.click('.svelte-flow__node:has-text("approve")');
+	await page.waitForSelector('text=Waiting for callback');
+	await settle(page);
+	await expect(page).toHaveScreenshot('run-detail-suspended-card-dark.png');
 });

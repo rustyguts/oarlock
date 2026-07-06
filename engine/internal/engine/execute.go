@@ -3,12 +3,14 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
 	"github.com/rustyguts/oarlock/engine/internal/definition"
@@ -18,6 +20,13 @@ import (
 type executeTaskWorker struct {
 	river.WorkerDefaults[ExecuteTaskArgs]
 	e *Engine
+}
+
+// Timeout caps one task attempt above the longest built-in step (delay ≤5m,
+// ai.prompt's 120s HTTP client) while staying under River's 1h
+// RescueStuckJobsAfter, so a genuinely stuck job is still rescued.
+func (w *executeTaskWorker) Timeout(*river.Job[ExecuteTaskArgs]) time.Duration {
+	return 15 * time.Minute
 }
 
 func (w *executeTaskWorker) Work(ctx context.Context, job *river.Job[ExecuteTaskArgs]) error {
@@ -73,9 +82,15 @@ func (w *executeTaskWorker) Work(ctx context.Context, job *river.Job[ExecuteTask
 		return w.finishTask(ctx, t, "failed", nil, fmt.Errorf("unknown step type %q", step.Type))
 	}
 
-	// Assemble the frozen context: run input + succeeded dependency outputs
-	// + workspace secrets ({{secrets.<name>}}).
-	runContext, err := w.buildContext(ctx, runID, runInputRaw)
+	// Assemble the frozen context: run input + the outputs of this step's
+	// transitive needs + workspace secrets ({{secrets.<name>}}). Only declared
+	// upstream outputs are visible, so parallel siblings can't leak in by
+	// completion order.
+	allowed := make([]string, 0)
+	for k := range def.TransitiveNeeds(stepKey) {
+		allowed = append(allowed, k)
+	}
+	runContext, err := buildRunContext(ctx, w.e.Pool, runID, runInputRaw, allowed)
 	if err != nil {
 		return w.finishTask(ctx, t, "failed", nil, err)
 	}
@@ -109,7 +124,15 @@ func (w *executeTaskWorker) Work(ctx context.Context, job *river.Job[ExecuteTask
 	taskLog := w.e.taskLogger(t)
 	taskLog.Info("task started", "type", step.Type)
 
-	out, execErr := executor.Execute(ctx, steps.TaskInput{
+	// Per-step timeout (seconds): the context error surfaces through the
+	// normal finishTask path as a task failure.
+	execCtx := ctx
+	if step.Timeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, time.Duration(step.Timeout)*time.Second)
+		defer cancel()
+	}
+	out, execErr := executor.Execute(execCtx, steps.TaskInput{
 		WorkspaceID: workspaceID,
 		RunID:       runID,
 		TaskID:      taskID,
@@ -118,10 +141,89 @@ func (w *executeTaskWorker) Work(ctx context.Context, job *river.Job[ExecuteTask
 		Context:     runContext,
 		Log:         taskLog,
 	})
+	// A long wait parks the task rather than finishing it: the worker slot frees
+	// and the task sits 'suspended' until a scheduled resume or an external
+	// callback revives it (design §4.1).
+	var susp *steps.Suspend
+	if errors.As(execErr, &susp) {
+		return w.suspendTask(ctx, t, susp)
+	}
 	if execErr != nil {
 		return w.finishTask(ctx, t, "failed", out.Data, execErr)
 	}
 	return w.finishTask(ctx, t, "succeeded", out.Data, nil)
+}
+
+// suspendTask parks a task returned by a Suspend signal. Mirrors finishTask's
+// transactional shape: the guarded status write, the suspensions row, and (for
+// a timed delay) the scheduled resume_task job all commit together (hard rule
+// 2). A resume token is minted for every kind — only its sha256 is stored; the
+// raw token appears solely in the callback task's output (its resume URL). The
+// status guard makes a concurrent cancel win: RowsAffected 0 drops everything.
+func (w *executeTaskWorker) suspendTask(ctx context.Context, t taskRef, susp *steps.Suspend) error {
+	rawToken, hashedToken, err := generateResumeToken()
+	if err != nil {
+		return err
+	}
+
+	// The while-suspended output. For a callback, merge the resume URL in so a
+	// human polling the task can find where to POST the resume.
+	output := susp.Output
+	if susp.Kind == "callback" {
+		merged := map[string]any{"resume_url": "/resume/" + rawToken}
+		if m, ok := susp.Output.(map[string]any); ok {
+			for k, v := range m {
+				merged[k] = v
+			}
+		}
+		output = merged
+	}
+	outJSON := t.redact.JSON(marshalJSON(output))
+
+	tx, err := w.e.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		update tasks set status = 'suspended', output = $2
+		where id = $1 and status = 'running'`, t.id, outJSON)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // canceled underneath us; drop everything
+	}
+
+	// payload carries the eventual resume output so the resume worker can
+	// reproduce it (redacted at write) without re-deriving it from the config.
+	if _, err := tx.Exec(ctx, `
+		insert into suspensions (task_id, workspace_id, kind, resume_token, resume_at, payload)
+		values ($1, $2, $3, $4, $5, $6)`,
+		t.id, t.workspaceID, susp.Kind, hashedToken, susp.ResumeAt, outJSON); err != nil {
+		return err
+	}
+
+	// A timed delay schedules its own resume; a callback waits for the endpoint.
+	if susp.ResumeAt != nil {
+		if _, err := w.e.Client.InsertTx(ctx, tx, ResumeTaskArgs{TaskID: t.id},
+			&river.InsertOpts{ScheduledAt: *susp.ResumeAt}); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	w.e.notify(ctx, t.runID)
+	taskLog := w.e.taskLogger(t)
+	if susp.ResumeAt != nil {
+		taskLog.Info("task suspended", "kind", susp.Kind, "resume_at", susp.ResumeAt.UTC().Format(time.RFC3339))
+	} else {
+		taskLog.Info("task suspended", "kind", susp.Kind)
+	}
+	return nil
 }
 
 type taskRef struct {
@@ -193,18 +295,25 @@ func (w *executeTaskWorker) finishTask(ctx context.Context, t taskRef, status st
 	return nil
 }
 
-func (w *executeTaskWorker) buildContext(ctx context.Context, runID uuid.UUID, runInputRaw []byte) (map[string]any, error) {
+// buildRunContext assembles the frozen expression context shared by both
+// workers: run input plus the succeeded outputs of the allowed step keys (a
+// step's transitive needs), as {"input": runInput, "steps": {key: output}}.
+// Only allowed keys are loaded, so parallel siblings never leak in by
+// completion order. Secrets are bound by the caller (execute.go) — never here:
+// the advance worker evaluates `if` guards through this same function and must
+// not decrypt the vault on the control queue.
+func buildRunContext(ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID, runInputRaw []byte, allowed []string) (map[string]any, error) {
 	var input any
 	if len(runInputRaw) > 0 {
 		_ = json.Unmarshal(runInputRaw, &input)
 	}
 
 	stepOutputs := map[string]any{}
-	rows, err := w.e.Pool.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		select distinct on (step_key) step_key, output
 		from tasks
-		where run_id = $1 and status = 'succeeded'
-		order by step_key, attempt desc`, runID)
+		where run_id = $1 and status = 'succeeded' and step_key = any($2)
+		order by step_key, attempt desc`, runID, allowed)
 	if err != nil {
 		return nil, err
 	}

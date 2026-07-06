@@ -10,6 +10,7 @@ require (
 	github.com/redis/go-redis/v9 v9.20.1
 	github.com/riverqueue/river v0.39.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0
+	github.com/robfig/cron/v3 v3.0.1
 )
 
 require (
