@@ -15,3 +15,8 @@ backups/
 # dependencies
 node_modules/
 /engine/api
+
+# embedded web UI (the image build copies web/build here; only the
+# placeholder index.html is tracked)
+/engine/internal/webui/dist/*
+!/engine/internal/webui/dist/index.html
