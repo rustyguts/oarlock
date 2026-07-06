@@ -144,7 +144,10 @@ func main() {
 	})
 
 	if mode != "worker" {
-		srv := &api.Server{DB: pool, Engine: eng, Cache: cache, Vault: v, Log: log}
+		srv := &api.Server{
+			DB: pool, Engine: eng, Cache: cache, Vault: v, Log: log,
+			SecureCookies: envOr("OARLOCK_SECURE_COOKIES", "auto"),
+		}
 		v1 := http.NewServeMux()
 		srv.Routes(v1)
 		// Body cap + session auth (auto-login bootstrap) on all API routes.
