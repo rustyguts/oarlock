@@ -1,5 +1,7 @@
-// Package api implements REST API v0 (design step 10): workflows, versions,
-// runs. Single implicit dev workspace; real auth + tenancy is Phase 2.
+// Package api implements the REST API: workflows, versions, runs, triggers,
+// secrets, MCP servers/tokens. Every request resolves a workspace from the
+// session cookie (auto-login bootstrap until real signup lands) and all
+// queries are scoped by it.
 package api
 
 import (
@@ -227,9 +229,9 @@ func (s *Server) getWorkflow(w http.ResponseWriter, r *http.Request) {
 }
 
 // updateWorkflow patches workflow metadata (name, is_enabled). Only provided
-// fields change; slug is immutable because it's referenced elsewhere. Note:
-// is_enabled will gate *triggers* (upcoming) — manual runs stay allowed
-// regardless of it.
+// fields change; slug is immutable because it's referenced elsewhere.
+// is_enabled gates triggers and programmatic (MCP) starts — manual runs stay
+// allowed regardless of it.
 func (s *Server) updateWorkflow(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {

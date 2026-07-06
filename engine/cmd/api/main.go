@@ -59,7 +59,7 @@ func main() {
 	}
 	defer cache.Close()
 
-	// Secrets vault: BYOK connections + MCP server auth (hard rule 6).
+	// Secrets vault: workspace secrets + MCP server auth (hard rule 6).
 	v, err := vault.New(pool, os.Getenv("OARLOCK_MASTER_KEY"), log)
 	if err != nil {
 		log.Error("vault init failed", "error", err)

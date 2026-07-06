@@ -1,4 +1,5 @@
-// Package engine implements the event-driven state machine (design §4.1).
+// Package engine implements the event-driven state machine (docs/project.md,
+// "Engine: event-driven state machine").
 // No process owns a run: truth lives in Postgres rows, workers are stateless,
 // and job insert + state write always share a transaction (hard rules 1–2).
 package engine

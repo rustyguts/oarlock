@@ -143,7 +143,7 @@ func (w *executeTaskWorker) Work(ctx context.Context, job *river.Job[ExecuteTask
 	})
 	// A long wait parks the task rather than finishing it: the worker slot frees
 	// and the task sits 'suspended' until a scheduled resume or an external
-	// callback revives it (design §4.1).
+	// callback revives it.
 	var susp *steps.Suspend
 	if errors.As(execErr, &susp) {
 		return w.suspendTask(ctx, t, susp)

@@ -90,7 +90,7 @@ func (e *Transform) Execute(ctx context.Context, in TaskInput) (TaskOutput, erro
 // --- delay ---
 // Short waits park in-process (a blocked goroutine is ~free in Go). Long waits
 // suspend the task instead — freeing the worker slot — and resume via a
-// scheduled job the engine enqueues from the Suspend signal (design §4.1).
+// scheduled job the engine enqueues from the Suspend signal.
 
 type Delay struct{}
 
