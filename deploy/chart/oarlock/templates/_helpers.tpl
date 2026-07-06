@@ -77,4 +77,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 - name: OARLOCK_ALLOWED_ORIGINS
   value: {{ . | quote }}
 {{- end }}
+{{- with .Values.config.secureCookies }}
+- name: OARLOCK_SECURE_COOKIES
+  value: {{ . | quote }}
+{{- end }}
 {{- end -}}

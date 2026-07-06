@@ -11,14 +11,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// Workspace API tokens authenticate the MCP endpoint (see mcpserver.go). Tokens
-// are shown once at creation; only their sha256 hash (via hashToken) is stored,
-// alongside an 8-char prefix for display.
+// Workspace API tokens authenticate the whole /v1 API at member tier plus the
+// MCP endpoint (see auth.go / mcpserver.go). Tokens are shown once at creation
+// (and rotation); only their sha256 hash (via hashToken) is stored, alongside
+// an 8-char prefix for display. Managing tokens is admin-only — and a token
+// can never manage tokens.
 
 func (s *Server) tokenRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/api-tokens", s.listAPITokens)
-	mux.HandleFunc("POST /v1/api-tokens", s.createAPIToken)
-	mux.HandleFunc("DELETE /v1/api-tokens/{id}", s.deleteAPIToken)
+	mux.HandleFunc("GET /v1/api-tokens", s.requireAdmin(s.listAPITokens))
+	mux.HandleFunc("POST /v1/api-tokens", s.requireAdmin(s.createAPIToken))
+	mux.HandleFunc("POST /v1/api-tokens/{id}/rotate", s.requireAdmin(s.rotateAPIToken))
+	mux.HandleFunc("DELETE /v1/api-tokens/{id}", s.requireAdmin(s.deleteAPIToken))
 }
 
 // newAPIToken mints a token in the form oak_<48 hex> (24 random bytes) and
@@ -80,13 +83,41 @@ func (s *Server) createAPIToken(w http.ResponseWriter, r *http.Request) {
 	err = s.DB.QueryRow(r.Context(), `
 		insert into workspace_api_tokens (workspace_id, name, token_hash, prefix, created_by)
 		values ($1, $2, $3, $4, $5) returning id`,
-		s.workspace(r), name, hash, prefix, a.UserID).Scan(&id)
+		s.workspace(r), name, hash, prefix, a.userIDOrNil()).Scan(&id)
 	if err != nil {
 		s.error(w, http.StatusConflict, fmt.Errorf("a token named %q already exists", name))
 		return
 	}
 	// The raw token is returned once and never persisted in cleartext.
 	s.json(w, http.StatusCreated, map[string]any{"id": id, "token": raw})
+}
+
+// rotateAPIToken swaps a token's secret in place: same id/name, new raw value
+// returned exactly once, last_used_at reset. Mirrors secret rotation — the
+// only way to change a credential without unwiring whatever holds it.
+func (s *Server) rotateAPIToken(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid token id"))
+		return
+	}
+	raw, hash, prefix, err := newAPIToken()
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, err)
+		return
+	}
+	tag, err := s.DB.Exec(r.Context(), `
+		update workspace_api_tokens set token_hash = $3, prefix = $4, last_used_at = null
+		where id = $1 and workspace_id = $2`, id, s.workspace(r), hash, prefix)
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		s.error(w, http.StatusNotFound, fmt.Errorf("token not found"))
+		return
+	}
+	s.json(w, http.StatusOK, map[string]any{"id": id, "token": raw})
 }
 
 func (s *Server) deleteAPIToken(w http.ResponseWriter, r *http.Request) {

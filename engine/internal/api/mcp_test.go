@@ -17,7 +17,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -34,6 +33,7 @@ import (
 	"github.com/rustyguts/oarlock/engine/internal/engine"
 	"github.com/rustyguts/oarlock/engine/internal/mcpclient"
 	"github.com/rustyguts/oarlock/engine/internal/steps"
+	"github.com/rustyguts/oarlock/engine/internal/vault"
 )
 
 const defaultTestDBURL = "postgres://oarlock:oarlock@localhost:5432/oarlock_test_mcpapi"
@@ -161,7 +161,14 @@ func newTestServer(t *testing.T) (*Server, func()) {
 		cancel()
 		t.Fatalf("engine.Start: %v", err)
 	}
-	srv := &Server{DB: pool, Engine: eng, Log: log}
+	// The truncate wiped all users, so the setup-done cache must reset too.
+	setupConfigured.Store(false)
+	v, err := vault.New(pool, "", log) // dev key; /v1/me reports vault.dev_key
+	if err != nil {
+		cancel()
+		t.Fatalf("vault.New: %v", err)
+	}
+	srv := &Server{DB: pool, Engine: eng, Vault: v, Log: log}
 	cleanup := func() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stopCancel()
@@ -212,7 +219,7 @@ func TestNewAPIToken(t *testing.T) {
 	}
 }
 
-// --- API tokens CRUD (DB-backed, over HTTP with auto-login bootstrap) ---
+// --- API tokens CRUD (DB-backed, over HTTP as the setup-claimed admin) ---
 
 func TestAPITokensCRUD(t *testing.T) {
 	srv, cleanup := newTestServer(t)
@@ -221,9 +228,8 @@ func TestAPITokensCRUD(t *testing.T) {
 
 	ts := httptest.NewServer(fullMux(srv))
 	defer ts.Close()
-	// Cookie jar carries the bootstrap session across requests.
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Jar: jar}
+	// First-run setup claims the seeded owner and logs in via the cookie jar.
+	client := setupAdmin(t, ts, "tokens-admin@test", "hunter2hunter2")
 
 	// Create.
 	var created struct {

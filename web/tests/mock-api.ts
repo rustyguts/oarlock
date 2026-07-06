@@ -439,6 +439,27 @@ const SECRETS = [
 	}
 ];
 
+const USERS = [
+	{
+		id: '00000000-0000-0000-0000-000000000002',
+		email: 'dev@localhost',
+		name: 'Dev User',
+		role: 'owner',
+		must_change_password: false,
+		created_at: '2026-05-20 10:00:00+00',
+		last_seen_at: '2026-06-12 09:00:00+00'
+	},
+	{
+		id: '00000000-0000-0000-0000-000000000003',
+		email: 'grace@example.com',
+		name: 'Grace Hopper',
+		role: 'editor',
+		must_change_password: true,
+		created_at: '2026-06-10 12:00:00+00',
+		last_seen_at: null
+	}
+];
+
 const API_TOKENS = [
 	{
 		id: 'a70e0000-0000-0000-0000-000000000001',
@@ -597,13 +618,16 @@ export async function mockApi(page: Page) {
 
 		if (path === '/v1/me') {
 			return json({
+				auth_kind: 'session',
 				user: { id: '00000000-0000-0000-0000-000000000002', email: 'dev@localhost', name: 'Dev User' },
 				workspace: { id: '00000000-0000-0000-0000-000000000001', name: 'Default Workspace', slug: 'default' },
 				role: 'owner',
+				must_change_password: false,
 				vault: { dev_key: false }
 			});
 		}
 		if (path === '/v1/stats') return json(STATS);
+		if (path === '/v1/users') return json(USERS);
 		if (path === '/v1/api-tokens') return json(API_TOKENS);
 		if (path === '/v1/workflows') return json(WORKFLOWS);
 		if (path === '/v1/step-types') return json(STEP_TYPES);

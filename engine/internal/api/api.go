@@ -32,10 +32,20 @@ type Server struct {
 	Cache  *redis.Client
 	Vault  *vault.Vault
 	Log    *slog.Logger
+	// SecureCookies: "auto" (default) sets the cookie Secure flag when the
+	// request arrived over TLS; "always"/"never" force it.
+	SecureCookies string
 }
 
 func (s *Server) Routes(mux *http.ServeMux) {
+	// Auth (setup/login/logout run outside the principal check — see authSkip).
+	mux.HandleFunc("POST /v1/setup", s.setup)
+	mux.HandleFunc("POST /v1/login", s.login)
+	mux.HandleFunc("POST /v1/logout", s.logout)
+	mux.HandleFunc("POST /v1/password", s.requireSession(s.changePassword))
 	mux.HandleFunc("GET /v1/me", s.me)
+	s.userRoutes(mux)
+
 	mux.HandleFunc("GET /v1/stats", s.stats)
 	mux.HandleFunc("GET /v1/step-types", s.listStepTypes)
 	mux.HandleFunc("GET /v1/workflows", s.listWorkflows)
@@ -46,7 +56,6 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/workflows/{id}/definition", s.putDefinition)
 	mux.HandleFunc("GET /v1/workflows/{id}/versions", s.listVersions)
 	mux.HandleFunc("GET /v1/workflows/{id}/versions/{version}", s.getVersion)
-	mux.HandleFunc("POST /v1/logout", s.logout)
 	mux.HandleFunc("POST /v1/workflows/{id}/runs", s.startRun)
 	mux.HandleFunc("GET /v1/workflows/{id}/runs", s.listRuns)
 	mux.HandleFunc("GET /v1/runs/{id}", s.getRun)

@@ -148,7 +148,7 @@ func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	err = s.DB.QueryRow(r.Context(), `
 		insert into secrets (workspace_id, name, type, provider, encrypted_data, key_id, created_by)
 		values ($1, $2, $3, $4, $5, $6, $7) returning id`,
-		s.workspace(r), name, req.Type, provider, sealed, vault.KeyID, a.UserID).Scan(&id)
+		s.workspace(r), name, req.Type, provider, sealed, vault.KeyID, a.userIDOrNil()).Scan(&id)
 	if err != nil {
 		s.error(w, http.StatusConflict, fmt.Errorf("a secret named %q already exists", name))
 		return
@@ -352,7 +352,7 @@ func (s *Server) createMCPServer(w http.ResponseWriter, r *http.Request) {
 		insert into mcp_servers (workspace_id, name, url, auth_encrypted, key_id, created_by)
 		values ($1, $2, $3, $4, $5, $6) returning id`,
 		s.workspace(r), strings.TrimSpace(req.Name), strings.TrimSpace(req.URL),
-		sealed, vault.KeyID, a.UserID).Scan(&id)
+		sealed, vault.KeyID, a.userIDOrNil()).Scan(&id)
 	if err != nil {
 		s.error(w, http.StatusConflict, fmt.Errorf("an MCP server named %q already exists", req.Name))
 		return

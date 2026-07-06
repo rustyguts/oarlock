@@ -157,11 +157,11 @@ teeing redacted records to the process log.
 
 ### Tenancy and cells
 
-Every API request resolves a workspace from the session (cookie auth,
-first-run auto-login as the migration-seeded owner; session tokens stored
-sha256-hashed). All queries filter by `workspace_id`. Programmatic access
-(the `/mcp` endpoint) authenticates via `oak_` workspace API tokens
-(sha256-hashed) — the token *is* the workspace credential.
+Every API request resolves a workspace from the session (password login,
+sha256-hashed session tokens; see §7) or an `oak_` bearer token. All queries
+filter by `workspace_id`. Programmatic access (`/mcp` and the REST API)
+authenticates via `oak_` workspace API tokens (sha256-hashed) — the token
+*is* the workspace credential, scoped to member tier.
 
 Cell-ready foundations laid now (cheap to keep, brutal to retrofit): a
 `cells` table + `cell_id` on workspaces (one row, `cell-0`); routing-by-token
@@ -260,13 +260,21 @@ per-step timeout/retries/if fields, unsaved-changes guard, run-with-input,
 version history + restore, triggers panel); run detail on the **pinned**
 version with per-attempt outputs/errors, suspension cards with resume URLs,
 live SSE updates, log tail with load-older paging; Configuration (secrets +
-dev-key banner), MCP Servers, and MCP Access (token) pages.
+dev-key banner), MCP Servers, API Access (tokens + rotate) pages; auth gate
+(setup / login / forced password change), admin Users page, and a user menu
+(change password / sign out).
 
 **Packaging.** All-in-one Docker image with embedded UI and
 `OARLOCK_MODE=all|api|worker`; Docker Compose stack; Helm chart with simple
 (all-in-one) and scalable (api + worker) modes, optional bundled
 Postgres/Valkey, ingress/TLS, existing-secret support, and a chart check
 script run in CI; GHCR publishing workflow (multi-arch amd64/arm64).
+
+**Auth.** Password login (argon2id), first-run setup that claims the admin,
+admin-created users with forced first-login password change and last-admin
+guards, sessions with the auto-login bootstrap removed, and `oak_` bearer
+tokens authenticating the full `/v1` API at member tier with the admin
+surface excluded and in-place rotation (project.md §7).
 
 **Tests + CI.** DB-backed engine tests (diamond DAG, failure, retry,
 cancel-vs-late-result, advance idempotency, context scoping, reaper,
@@ -286,7 +294,9 @@ Postgres service, `-p 1`; web svelte-check/build/vitest).
   for cloud).
 - Per-workspace concurrency cap (the fairness knob and pricing lever) not
   implemented.
-- Signup/login UI + multi-user still absent (auto-login bootstrap remains).
+- Built-in auth shipped (§7): password login, admin-created users, full-API
+  bearer tokens. SSRF guard on `http.request`/MCP URLs is still the remaining
+  blocker before a network-exposed (non-tailnet) deployment.
 
 ### Phase 2 — multi-tenant cloud alpha (exit: 10–20 external workspaces, zero isolation incidents)
 
@@ -320,7 +330,107 @@ Postgres service, `-p 1`; web svelte-check/build/vitest).
 - Log retention: weekly partition maintenance + `DROP PARTITION`.
 - goja frozen-context hardening + memory limits.
 
-## 7. Platform administration (decision, not scheduled work)
+## 7. Built-in authentication (v1 — shipped)
+
+Simple auth out of the box for self-hosters: first visit creates the admin,
+everything requires login, admins manage users and API keys. No SMTP, no
+external IdP, no new infrastructure — Postgres and the existing session
+mechanism carry all of it. Implemented in `internal/api` (`auth.go`,
+`users.go`, `password.go`, `ratelimit.go`; migration 0010) and the web
+`AuthGate` / `session.svelte.ts` / `/users` / `/account` surfaces.
+
+### Decisions
+
+- **Identity**: email + password. Hashes are argon2id (`x/crypto/argon2`,
+  OWASP parameters: 19 MiB memory, t=2, p=1, PHC-encoded) in a new nullable
+  `users.password_hash` — NULL means the account cannot log in.
+- **First run = setup**: while no user has a password, authenticated routes
+  return 401 with `{"setup_required": true}` and the UI routes to `/setup`.
+  `POST /v1/setup` **claims the migration-seeded owner account in place**
+  (sets email, name, password) rather than inserting a new user — every
+  `created_by` FK and the owner membership survive, and the guard
+  (`where password_hash is null` on the seeded row) makes concurrent setup
+  attempts race-safe. The first account is therefore the admin by
+  construction.
+- **Subsequent users are admin-created** (signup stays closed): admins add
+  users from a Users page with an initial password and
+  `must_change_password=true`; the user is forced through a password change
+  on first login. No open registration, no invite-link plumbing, no email
+  dependency. Invite links can layer on later.
+- **Roles**: reuse the existing `workspace_members` ladder, enforced in v1 as
+  two tiers — **admin** (`owner`|`admin`) and **member** (`editor`|`viewer`).
+  Admin-only surface: user management and API tokens. Everything else is
+  available to any authenticated member; per-route viewer enforcement is
+  deferred until it's needed.
+- **API keys**: the existing `oak_` workspace tokens authenticate the **whole
+  `/v1` API** (plus `/mcp`, as today) via `Authorization: Bearer`. Token
+  principals are member-tier and are **hard-excluded from the admin surface**
+  (`/v1/users*`, `/v1/api-tokens*`, auth endpoints) — a leaked key can drive
+  workflows but can never mint credentials or escalate.
+  `POST /v1/api-tokens/{id}/rotate` swaps the hash in place (same id/name)
+  and returns the new raw token exactly once, mirroring secret rotation.
+- **Sessions**: the existing mechanism stays (sha256-hashed tokens, 30-day
+  TTL, HttpOnly + SameSite=Lax cookie, logout, expiry pruning). Login mints a
+  fresh token (no fixation); setting or changing a password deletes the
+  user's other sessions. The cookie gains `Secure` automatically when the
+  request arrived over TLS (`X-Forwarded-Proto`), overridable via
+  `OARLOCK_SECURE_COOKIES=auto|always|never`. The **auto-login bootstrap is
+  removed**.
+
+### API surface
+
+Unauthenticated: `POST /v1/setup` (first run only), `POST /v1/login`
+(uniform "invalid credentials", per-IP+email rate limit — in-memory, so
+per-replica in HA; acceptable v1). Authenticated (self): `POST /v1/logout`,
+`POST /v1/password` (requires current password unless `must_change_password`),
+`GET /v1/me` (gains `must_change_password`). Admin-only: `GET|POST
+/v1/users`, `PATCH /v1/users/{id}` (name/role), `DELETE /v1/users/{id}`,
+`POST /v1/users/{id}/reset-password` (temp password + forced change), token
+CRUD + rotate. Guards: the last admin can't be deleted or demoted. Webhooks,
+`/resume/{token}`, `/mcp`, `/healthz`, and the static UI assets keep their
+current auth models.
+
+`WithAuth` resolution order: `Bearer oak_…` → token principal (workspace,
+member-tier); else session cookie → user principal; else 401 (with
+`setup_required` while unconfigured). A `requireAdmin` wrapper protects the
+admin routes; token principals always fail it.
+
+### UI
+
+`/setup` and `/login` pages (minimal centered card, house style). The root
+layout fetches `/v1/me` and redirects: 401→`/login`, `setup_required`→
+`/setup`, `must_change_password`→ change-password screen. Sidebar footer
+becomes a user menu (change password, log out). New admin-only **Users**
+page (create / role / reset password / delete). The MCP Access page becomes
+**API Access**: tokens now cover the full API, with a Rotate action reusing
+the shown-once dialog.
+
+### Migration and compatibility
+
+One migration: `users.password_hash text`, `users.must_change_password
+boolean not null default false`. Existing installs wake up in setup mode
+(the seeded user has no password); their data is untouched and setup adopts
+it. DB-backed API tests replace the cookie-bootstrap flow with a
+seed-user-and-login helper. The dev split (vite :3001 → API :9000) works
+unchanged over credentialed CORS. Once this ships, the houston deployment
+can graduate from tailnet-only — after the SSRF guard also lands (§6).
+
+### Out of scope for v1
+
+OIDC/SSO (Phase 3, paid), email flows, invite links, per-key token scopes,
+2FA, audit log (Phase 3), multi-workspace membership.
+
+### Status
+
+Shipped (all steps): migration 0010, argon2id, setup/login/logout/password,
+`WithAuth` rework + login rate limit (bootstrap removed), users CRUD with
+last-admin guards, bearer tokens on `/v1` + rotate; web setup/login/
+change-password gate, route guard (`session.svelte.ts`), user menu, Users
+page, API Access rotate. Verified with DB-backed engine tests and a live
+setup→login→token-run browser pass. Remaining follow-up: the houston
+deployment can move off tailnet-only once the SSRF guard (§6) also lands.
+
+## 8. Platform administration (decision, not scheduled work)
 
 **A platform operator is not a workspace role.** The workspace ladder
 (`owner > admin > editor > viewer`) is tenant-scoped and stays that way;
