@@ -1,0 +1,86 @@
+{{- $components := list }}
+{{- if eq .Values.mode "simple" }}
+{{- $components = list (dict "suffix" "" "mode" "all" "replicas" .Values.replicas.all "resources" .Values.resources.all) }}
+{{- else if eq .Values.mode "scalable" }}
+{{- $components = list
+      (dict "suffix" "-api" "mode" "api" "replicas" .Values.replicas.api "resources" .Values.resources.api)
+      (dict "suffix" "-worker" "mode" "worker" "replicas" .Values.replicas.worker "resources" .Values.resources.worker) }}
+{{- else }}
+{{- fail (printf "mode must be \"simple\" or \"scalable\" (got %q)" .Values.mode) }}
+{{- end }}
+{{- range $c := $components }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oarlock.fullname" $ }}{{ $c.suffix }}
+  labels:
+    {{- include "oarlock.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $c.mode }}
+spec:
+  replicas: {{ $c.replicas }}
+  selector:
+    matchLabels:
+      {{- include "oarlock.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $c.mode }}
+  template:
+    metadata:
+      labels:
+        {{- include "oarlock.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $c.mode }}
+      {{- with $.Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: oarlock
+          image: {{ include "oarlock.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: OARLOCK_MODE
+              value: {{ $c.mode | quote }}
+            {{- include "oarlock.env" $ | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          {{- with $c.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,7 +1,10 @@
 import { env } from '$env/dynamic/public';
 
-// The browser talks to the Go API directly (CORS is open in dev).
-const BASE = env.PUBLIC_API_URL || 'http://localhost:9000';
+// The browser talks to the Go API directly. In the production image the API
+// binary serves this UI itself, so the default is same-origin; PUBLIC_API_URL
+// overrides it for dev setups where the vite server and the API are on
+// different ports (CORS applies there).
+const BASE = env.PUBLIC_API_URL || (typeof location !== 'undefined' ? location.origin : '');
 
 // Exposed so callers can build off-API URLs (e.g. the webhook ingress URL,
 // which lives under /hooks, not /v1).

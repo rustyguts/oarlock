@@ -1,0 +1,29 @@
+name: Docker
+
+# PR smoke build only — publishing is owned by the Release workflow
+# (.github/workflows/release.yml): dev images on every main push, versioned
+# + latest images on dispatched production releases.
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: build (no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

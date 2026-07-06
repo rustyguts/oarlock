@@ -170,6 +170,21 @@ control plane owns users/sessions/directory/billing, cells own everything
 with a `workspace_id`; UUIDs everywhere so tenants are movable. **No second
 cell until someone pays for it.**
 
+### Packaging and deployment
+
+One image (`ghcr.io/rustyguts/oarlock`, published by CI on main): the web UI
+builds to a static SPA and is embedded in the Go binary, which serves it
+same-origin next to the API. `OARLOCK_MODE` selects the role — `all` (UI +
+API + workers, the single-container shape), `api` (UI + API, inserts jobs
+only), `worker` (workers + reaper + scheduler, `/healthz` only) — so the same
+image runs as one container or as an HA split with independently scaled API
+and worker tiers. Schema + River migrations run under a Postgres advisory
+lock, making concurrent replica boot safe. The Helm chart
+(`deploy/chart/oarlock`) installs either shape (`mode: simple | scalable`)
+with an optional bundled single-node Postgres/Valkey for simple installs.
+Postgres is the only hard dependency; without Valkey, live updates degrade to
+polling.
+
 ### Data model
 
 The embedded migrations in `engine/internal/db/migrations/` are the source of
@@ -246,6 +261,12 @@ version history + restore, triggers panel); run detail on the **pinned**
 version with per-attempt outputs/errors, suspension cards with resume URLs,
 live SSE updates, log tail with load-older paging; Configuration (secrets +
 dev-key banner), MCP Servers, and MCP Access (token) pages.
+
+**Packaging.** All-in-one Docker image with embedded UI and
+`OARLOCK_MODE=all|api|worker`; Docker Compose stack; Helm chart with simple
+(all-in-one) and scalable (api + worker) modes, optional bundled
+Postgres/Valkey, ingress/TLS, existing-secret support, and a chart check
+script run in CI; GHCR publishing workflow (multi-arch amd64/arm64).
 
 **Tests + CI.** DB-backed engine tests (diamond DAG, failure, retry,
 cancel-vs-late-result, advance idempotency, context scoping, reaper,

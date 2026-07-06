@@ -20,9 +20,15 @@ import (
 	"github.com/rustyguts/oarlock/engine/internal/engine"
 	"github.com/rustyguts/oarlock/engine/internal/steps"
 	"github.com/rustyguts/oarlock/engine/internal/vault"
+	"github.com/rustyguts/oarlock/engine/internal/webui"
 )
 
 const version = "0.1.0"
+
+// migrationLockKey serializes schema migrations across replicas: several
+// api/worker pods may boot concurrently in HA, and both the app migrator and
+// River's must run exactly once at a time. ("oarlock" as an int64.)
+const migrationLockKey int64 = 0x6f61726c6f636b
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -34,6 +40,18 @@ func main() {
 	valkeyAddr := envOr("VALKEY_ADDR", "localhost:6379")
 	addr := envOr("LISTEN_ADDR", ":9000")
 
+	// One image, three roles:
+	//   all    — HTTP (UI + API + ingress) and workers in one process (default)
+	//   api    — HTTP only; jobs are inserted but worked by worker replicas
+	//   worker — workers + reaper/scheduler only, /healthz for probes
+	mode := envOr("OARLOCK_MODE", "all")
+	switch mode {
+	case "all", "api", "worker":
+	default:
+		log.Error("invalid OARLOCK_MODE (want all, api, or worker)", "mode", mode)
+		os.Exit(1)
+	}
+
 	pool, err := connectDB(ctx, dbURL)
 	if err != nil {
 		log.Error("postgres connect failed", "error", err)
@@ -41,12 +59,6 @@ func main() {
 	}
 	defer pool.Close()
 	log.Info("connected to postgres")
-
-	if err := db.Migrate(ctx, pool); err != nil {
-		log.Error("migrations failed", "error", err)
-		os.Exit(1)
-	}
-	log.Info("migrations applied")
 
 	// Valkey is never load-bearing for correctness (Postgres is truth); it only
 	// speeds up live SSE updates. Keep the client on a failed ping — go-redis
@@ -66,23 +78,45 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Engine: River migrations + control/tasks queues + workers, in-process
-	// with the API for now (split into a dedicated worker binary later).
+	// Migrations (app schema + River's) run under a Postgres advisory lock held
+	// on a dedicated connection, so concurrently booting replicas take turns
+	// and each sees an already-migrated schema.
+	lockConn, err := pool.Acquire(ctx)
+	if err != nil {
+		log.Error("acquire migration lock connection failed", "error", err)
+		os.Exit(1)
+	}
+	if _, err := lockConn.Exec(ctx, `select pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		lockConn.Release()
+		log.Error("acquire migration lock failed", "error", err)
+		os.Exit(1)
+	}
+	if err := db.Migrate(ctx, pool); err != nil {
+		log.Error("migrations failed", "error", err)
+		os.Exit(1)
+	}
+	log.Info("migrations applied")
+
+	// Engine: River migrations + client + workers. In api mode the client only
+	// inserts jobs (Start is never called); worker replicas do the work.
 	eng, err := engine.New(ctx, pool, steps.Default(&steps.Services{Secrets: v, MCP: v}), cache, v, log)
+	if _, unlockErr := lockConn.Exec(context.WithoutCancel(ctx), `select pg_advisory_unlock($1)`, migrationLockKey); unlockErr != nil {
+		log.Warn("release migration lock failed", "error", unlockErr)
+	}
+	lockConn.Release()
 	if err != nil {
 		log.Error("engine init failed", "error", err)
 		os.Exit(1)
 	}
-	if err := eng.Start(ctx); err != nil {
-		log.Error("engine start failed", "error", err)
-		os.Exit(1)
+	if mode != "api" {
+		if err := eng.Start(ctx); err != nil {
+			log.Error("engine start failed", "error", err)
+			os.Exit(1)
+		}
+		log.Info("river engine started", "queues", []string{engine.QueueControl, engine.QueueTasks})
 	}
-	log.Info("river engine started", "queues", []string{engine.QueueControl, engine.QueueTasks})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"name": "oarlock", "version": version})
-	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		hctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
@@ -94,33 +128,47 @@ func main() {
 		}
 		if err := cache.Ping(hctx).Err(); err != nil {
 			checks["valkey"] = err.Error()
-			status = http.StatusServiceUnavailable
+			// Valkey is optional: live updates degrade to polling, so a worker
+			// or API pod without it is still healthy.
+			if checks["postgres"] == "ok" {
+				checks["valkey"] = "degraded: " + err.Error()
+			}
 		}
 		writeJSON(w, status, map[string]any{
-			"status": map[bool]string{true: "ok", false: "degraded"}[status == http.StatusOK],
-			"checks": checks,
+			"status":  map[bool]string{true: "ok", false: "unhealthy"}[status == http.StatusOK],
+			"name":    "oarlock",
+			"version": version,
+			"mode":    mode,
+			"checks":  checks,
 		})
 	})
 
-	srv := &api.Server{DB: pool, Engine: eng, Cache: cache, Vault: v, Log: log}
-	v1 := http.NewServeMux()
-	srv.Routes(v1)
-	// Body cap + session auth (auto-login bootstrap) on all API routes.
-	mux.Handle("/v1/", api.MaxBody(srv.WithAuth(v1)))
-	// Webhook ingress is UNAUTHENTICATED (external callers): body cap + CORS but
-	// no session auth. The workspace is resolved from the {ws} slug in the path.
-	mux.Handle("POST /hooks/{ws}/{path}", api.MaxBody(srv.WebhookHandler()))
-	// Callback resume is UNAUTHENTICATED (external approvers): body cap + CORS but
-	// no session auth. The unguessable resume token is the credential.
-	mux.Handle("POST /resume/{token}", api.MaxBody(srv.ResumeHandler()))
-	// Workspace MCP endpoint: body cap + CORS, but no session auth — the bearer
-	// API token is the workspace credential (see api.MCPHandler). One stable URL
-	// serves every workspace; the token scopes the request.
-	mcpHandler := api.MaxBody(srv.MCPHandler())
-	mux.Handle("/mcp", mcpHandler)
-	mux.Handle("/mcp/", mcpHandler)
+	if mode != "worker" {
+		srv := &api.Server{DB: pool, Engine: eng, Cache: cache, Vault: v, Log: log}
+		v1 := http.NewServeMux()
+		srv.Routes(v1)
+		// Body cap + session auth (auto-login bootstrap) on all API routes.
+		mux.Handle("/v1/", api.MaxBody(srv.WithAuth(v1)))
+		// Webhook ingress is UNAUTHENTICATED (external callers): body cap + CORS but
+		// no session auth. The workspace is resolved from the {ws} slug in the path.
+		mux.Handle("POST /hooks/{ws}/{path}", api.MaxBody(srv.WebhookHandler()))
+		// Callback resume is UNAUTHENTICATED (external approvers): body cap + CORS but
+		// no session auth. The unguessable resume token is the credential.
+		mux.Handle("POST /resume/{token}", api.MaxBody(srv.ResumeHandler()))
+		// Workspace MCP endpoint: body cap + CORS, but no session auth — the bearer
+		// API token is the workspace credential (see api.MCPHandler). One stable URL
+		// serves every workspace; the token scopes the request.
+		mcpHandler := api.MaxBody(srv.MCPHandler())
+		mux.Handle("/mcp", mcpHandler)
+		mux.Handle("/mcp/", mcpHandler)
+		// Everything else is the embedded web UI (SPA fallback). More specific
+		// patterns above win, so this never shadows the API.
+		mux.Handle("/", webui.Handler())
+	}
 
-	// Credentialed CORS is restricted to an explicit origin allowlist.
+	// Credentialed CORS is restricted to an explicit origin allowlist. It only
+	// matters when the UI is served from a different origin (dev); the embedded
+	// UI is same-origin.
 	allowedOrigins := strings.Split(envOr("OARLOCK_ALLOWED_ORIGINS", "http://localhost:3001"), ",")
 	httpSrv := &http.Server{
 		Addr:    addr,
@@ -132,7 +180,7 @@ func main() {
 	}
 
 	go func() {
-		log.Info("api listening", "addr", addr, "version", version)
+		log.Info("oarlock listening", "addr", addr, "version", version, "mode", mode)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("http server failed", "error", err)
 			stop()
@@ -146,8 +194,10 @@ func main() {
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Error("http shutdown error", "error", err)
 	}
-	if err := eng.Stop(shutdownCtx); err != nil {
-		log.Error("engine shutdown error", "error", err)
+	if mode != "api" {
+		if err := eng.Stop(shutdownCtx); err != nil {
+			log.Error("engine shutdown error", "error", err)
+		}
 	}
 }
 
