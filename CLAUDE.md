@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-oarlock is a self-hostable workflow automation platform: a drag-and-drop canvas builder over an event-driven Go engine. `docs/design.md` is the binding build plan — its glossary names (Workspace, Workflow, Version, Definition, Step, Task, Run, Secret, Suspension, Cell) and eight "hard rules" govern naming and architecture decisions. `docs/todo.md` tracks progress against the design's build order; update it when completing or rescoping work.
+oarlock is a self-hostable workflow automation platform: a drag-and-drop canvas builder over an event-driven Go engine. `docs/project.md` is the binding project document — its glossary names (Workspace, Workflow, Version, Definition, Step, Task, Run, Secret, Suspension, Cell) and eight "hard rules" govern naming and architecture decisions. Its "Remaining work" section tracks what's left; update it when completing or rescoping work.
 
 ## Commands
 
@@ -17,6 +17,7 @@ cd engine && go test ./internal/definition/ -run TestValidateCycle   # single te
 cd web && bun install                     # install deps (uses bun.lock)
 cd web && bun run build                   # vite build (does NOT typecheck)
 cd web && bun run check                   # typecheck via svelte-check (vite won't catch TS errors)
+cd web && bun run test:unit               # vitest (flow.ts round-trip etc.)
 cd web && bun run test:ui                 # Playwright visual regression (no backend needed)
 cd web && bun run test:ui:update          # regenerate snapshot baselines after intentional UI changes
 cd web && bunx playwright test -g "sidebar"            # single snapshot test
@@ -26,7 +27,7 @@ Migrations are embedded SQL in `engine/internal/db/migrations/`, applied automat
 
 ## Engine architecture (engine/)
 
-The non-negotiable core (design §4.1): **no process owns a run; truth lives in Postgres rows**. River job types:
+The non-negotiable core: **no process owns a run; truth lives in Postgres rows**. River job types:
 
 - `advance_run` (`internal/engine/advance.go`): loads the definition + latest task attempt per step, computes ready steps (all `needs` succeeded/skipped), inserts task rows and enqueues `execute_task` jobs **in one transaction**, marks the run succeeded/failed when terminal. Idempotent — re-derives everything from rows, so duplicate advances converge. A ready step with an `if` guard is resolved here: a falsy expression writes a terminal `skipped` row (no execute job), an eval error a `failed` row; whenever a guard row is inserted, one follow-up `advance_run` is enqueued in the same tx (nothing else would re-advance since those rows carry no job). Guard context is scoped to the step's transitive `needs` and does **not** bind secrets (conditions must not decrypt the vault on the control queue).
 - `execute_task` (`internal/engine/execute.go`): loads the task, builds the frozen expression context (`input`, the outputs of the step's *transitive* `needs` only via `definition.TransitiveNeeds` — siblings never leak in, `secrets.*`), interpolates `{{ }}` config via goja, runs the executor (optionally under a per-step `timeout`), persists the result, and enqueues the next `advance_run` in the same transaction as the status write. A worker-level `Timeout()` caps a task attempt at 15m (River's default is 60s — do not remove this).
@@ -60,7 +61,7 @@ The Inspector renders step config forms from the API's `config_spec`; kinds `api
 
 **Design language (Brendan's house style)**: every component shares the *same* background color — never a lighter card on a darker page (or vice versa). Separation comes from **borders**, not background contrast. This is encoded in the theme tokens (`--card`, `--popover`, `--sidebar` are all `var(--background)` in both modes); don't introduce surfaces with their own background tones. Subtle `bg-muted` fills are fine for *insets* (icon tiles, code/log blocks), not for panels. Primary pages (workflow list, run history) use the full page width (`w-full px-6`), not centered max-width columns. Brand font is Geist (+ Geist Mono), loaded via Fontsource. Brand-colored **text/icons on the background use `text-primary-strong`**, not `text-primary` — raw #ffcc00 is unreadable on white, so the token is a darkened same-hue gold in light mode and #ffcc00 in dark. `bg-primary` with `text-primary-foreground` (filled buttons) is fine in both modes.
 
-shadcn-svelte components live in `src/lib/components/ui/` and are project-owned — editing them is fine and sometimes necessary (e.g. `sidebar-menu-button.svelte` omits `data-active` when false because its styles use presence-based variants). Icons: `@lucide/svelte`, imported per-icon from `@lucide/svelte/icons/<name>`. Brand primary is exactly `#ffcc00` (theme vars in `src/app.css`); active nav items use it for icon + text.
+shadcn-svelte components live in `src/lib/components/ui/` and are project-owned — editing them is fine and sometimes necessary (e.g. `sidebar-menu-button.svelte` omits `data-active` when false because its styles use presence-based variants). Unused subcomponents have been pruned from the vendored kits; re-add via `bunx shadcn add <component>` if needed. Icons: `@lucide/svelte`, imported per-icon from `@lucide/svelte/icons/<name>`. Brand primary is exactly `#ffcc00` (theme vars in `src/app.css`); active nav items use it for icon + text.
 
 ## Frontend screenshot loop (required)
 
@@ -74,12 +75,13 @@ Whenever you change the frontend, **verify by looking at it, not just by buildin
 
 ## Visual regression suite (web/tests/)
 
-Fully deterministic: the API is mocked at the network layer (`tests/mock-api.ts`), the clock is frozen, locale/timezone pinned, animations disabled, diff budget 50px. Baselines are platform-suffixed (`-darwin`). When adding API surface that pages consume, extend the mock fixtures or the affected tests will silently render empty states. An unexpected snapshot failure means the UI changed when it shouldn't have; an intentional change means regenerating baselines and committing the diff.
+Fully deterministic: the API is mocked at the network layer (`tests/mock-api.ts`), the clock is frozen, locale/timezone pinned, animations disabled, diff budget 50px. Baselines are platform-suffixed (`-darwin`) and intentionally NOT run in CI. When adding API surface that pages consume, extend the mock fixtures or the affected tests will silently render empty states. An unexpected snapshot failure means the UI changed when it shouldn't have; an intentional change means regenerating baselines and committing the diff.
 
 ## Gotchas
 
 - Host ports 8080, 3000, and 5173 are occupied by other projects on this machine — that's why the API is :9000 and web is :3001.
 - `vite build` succeeding does not mean the TS is sound; always run svelte-check.
 - Postgres 18's Docker image keeps PGDATA under `/var/lib/postgresql/<major>`, so the volume mounts the parent dir (not `.../data`).
+- Engine DB-backed tests self-skip without Postgres; CI runs them with `go test -p 1` because the engine and api test packages share one `DATABASE_URL_TEST` database and truncate between tests.
 - A local MCP test server for e2e lives at `/tmp/oarlock-mcp-test/server.mjs` (port 7777, bearer `test-secret-123`); the engine reaches it via `host.docker.internal`.
 - Definitions store interpolatable strings; a step referencing `{{input.x}}` run with empty input interpolates to empty string — by design (expressions only see declared dependencies' outputs and provided input).

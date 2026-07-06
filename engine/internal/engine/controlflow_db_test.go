@@ -1,13 +1,10 @@
 package engine
 
-// DB-backed tests for step-level `if` guards (design §6 step 19). They reuse the
-// dbtest_test.go harness (seedWorkflow, newTestEngine, the query helpers) but
-// drive with driveToTerminal below rather than drive: a guard that skips or
-// fails a step leaves a pass with no queued task yet the run is not terminal
-// (it enqueues a follow-up advance), which drive would mistake for convergence.
-//
-// Point these at a dedicated test DB so they don't collide with other suites:
-//   DATABASE_URL_TEST=postgres://oarlock:oarlock@localhost:5432/oarlock_test_cf
+// DB-backed tests for step-level `if` guards. They reuse the dbtest_test.go
+// harness (seedWorkflow, newTestEngine, the query helpers) but drive with
+// driveToTerminal below rather than drive: a guard that skips or fails a step
+// leaves a pass with no queued task yet the run is not terminal (it enqueues a
+// follow-up advance), which drive would mistake for convergence.
 
 import (
 	"context"

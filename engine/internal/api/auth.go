@@ -17,7 +17,7 @@ import (
 // Session auth with first-run auto-login: until real signup lands (Phase 2
 // step 14), a request without a valid session is automatically logged in as
 // the seeded default user — owner of the default workspace — so a fresh
-// install works with zero setup. The tenant is the Workspace (design §3);
+// install works with zero setup. The tenant is the Workspace (design glossary);
 // every request resolves to one workspace + role, and handlers must scope
 // every query by it (hard rule 3).
 

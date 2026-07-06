@@ -14,7 +14,6 @@
     "test:unit": "vitest run"
   },
   "devDependencies": {
-    "@internationalized/date": "^3.12.2",
     "@lucide/svelte": "^1.17.0",
     "@playwright/test": "^1.60.0",
     "@sveltejs/adapter-node": "^5.2.0",

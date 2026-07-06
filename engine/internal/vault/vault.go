@@ -1,5 +1,5 @@
 // Package vault encrypts workspace secrets (design hard rule 6: secrets only
-// via connections, never in definitions or logs) and resolves them for step
+// via the vault, never in definitions or logs) and resolves them for step
 // executors. v0 is AES-256-GCM under a single master key from the
 // environment; per-row data keys (true envelope encryption) can swap in later
 // behind the same key_id mechanism.

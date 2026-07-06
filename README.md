@@ -1,16 +1,20 @@
 # oarlock
 
-Self-hosted workflow automation: a drag-and-drop workflow builder backed by an
+Self-hosted workflow automation: a drag-and-drop canvas builder backed by an
 event-driven Go engine on [River](https://riverqueue.com) (Postgres-backed
-queue). See [docs/design.md](docs/design.md) for the design and
-[docs/todo.md](docs/todo.md) for build progress.
+queue). Every workflow is also an MCP tool an AI agent can call.
+
+See [docs/project.md](docs/project.md) for the design, current features, and
+remaining work.
 
 ## Layout
 
-- `engine/` — Go core: REST API + River workers (`advance_run` / `execute_task`), step executors, migrations. Engine state lives in Postgres rows; workers are stateless.
-- `web/` — SvelteKit UI: workflow list + Svelte Flow canvas editor (drag steps from the palette, wire `needs` edges, configure, save versions, run with live status).
-- `docs/` — design doc + build todo
-- `deploy/` — Helm / production manifests (later)
+- `engine/` — Go core: REST API + River workers (`advance_run` /
+  `execute_task` / `resume_task`), step executors, secrets vault, embedded
+  migrations. Run state lives in Postgres rows; workers are stateless.
+- `web/` — SvelteKit UI: dashboard, workflow list, Svelte Flow canvas editor,
+  run history/detail with live updates, secrets + MCP configuration.
+- `docs/` — the project document.
 
 ## Quickstart
 
@@ -24,22 +28,34 @@ make logs    # tail the API
 make down    # stop everything
 ```
 
-Ports: web UI **3001**, API **9000**, Postgres 5432 (`oarlock`/`oarlock`), Valkey 6379.
+Ports: web UI **3001**, API **9000**, Postgres 5432 (`oarlock`/`oarlock`),
+Valkey 6379.
 
 Create a workflow in the UI, drag steps onto the canvas (HTTP Request,
-Transform, Delay, Log), connect them, then hit Run. String config fields
-support `{{ }}` expressions against `input` and `steps.<key>` outputs, e.g.
+Transform, Code, Delay, Wait for Callback, AI Prompt, MCP Tool), connect
+them, then hit Run. String config fields take `{{ }}` expressions against
+`input`, upstream `steps.<key>` outputs, and `secrets.<name>`, e.g.
 `{{ steps.fetch.body.title }}`.
+
+Workflows fire from webhooks (`POST /hooks/{workspace}/{path}`), cron
+schedules, the UI, or an MCP client pointed at `/mcp` with a workspace API
+token (created under **MCP Access**).
 
 ## Local development
 
 ```sh
-# engine (needs compose postgres + valkey running)
+# engine (needs the compose postgres + valkey running)
 cd engine && go run ./cmd/api
 
 # web (talks to the API on :9000)
 cd web && bun install && bun run dev
 
 # tests
-make test
+cd engine && go test ./...        # DB-backed tests self-skip without Postgres
+cd web && bun run check && bun run test:unit
+cd web && bun run test:ui         # Playwright visual regression (no backend)
 ```
+
+Set `OARLOCK_MASTER_KEY` (64 hex chars, `openssl rand -hex 32`) before
+storing real secrets — without it a built-in dev key is used and the UI shows
+a warning.

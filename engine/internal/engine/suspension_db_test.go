@@ -1,13 +1,10 @@
 package engine
 
-// DB-backed tests for suspensions (design §4.1 "Long waits"): a long delay and
+// DB-backed tests for suspensions (design: long waits): a long delay and
 // the callback/approval step park their task 'suspended' (freeing the worker
 // slot), then a scheduled resume_task job or the ResumeSuspendedTask callback
 // path revives it. They reuse the dbtest_test.go harness and drive the workers
 // directly.
-//
-// Point these at a dedicated test DB so they don't collide with other suites:
-//   DATABASE_URL_TEST=postgres://oarlock:oarlock@localhost:5432/oarlock_test_susp
 
 import (
 	"context"
