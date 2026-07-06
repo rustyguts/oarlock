@@ -1,0 +1,131 @@
+name: Release
+
+# Two release channels (the repo is v0 — majors are deliberately not offered):
+#
+#   dev        — every push to main cuts a prerelease: tag vX.Y.Z-dev.N +
+#                GitHub prerelease + image tags {X.Y.Z-dev.N, dev}. No version
+#                bump is committed back to main (versions derive from tags).
+#   production — manually dispatched with an increment of patch or minor:
+#                bumps package.json / Chart.yaml / main.go in a release
+#                commit, tags vX.Y.Z, publishes a real GitHub Release and
+#                image tags {X.Y.Z, latest}.
+#
+# Image publishing happens HERE (not in a tag-triggered workflow) because
+# tags pushed with GITHUB_TOKEN never trigger other workflows.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      increment:
+        description: "Version increment (v0 repo: only patch and minor)"
+        required: true
+        type: choice
+        options: [patch, minor]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  dev:
+    name: dev release (main)
+    if: "github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore: release')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: compute next dev version
+        id: ver
+        run: echo "version=$(bunx release-it --release-version --preRelease=dev)" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: tag + GitHub prerelease
+        # No bump commit on main: the tag is the record. set-version.sh still
+        # runs (after:bump), so the image built below embeds the dev version.
+        run: bunx release-it --ci --preRelease=dev --no-git.commit --git.pushArgs=--tags
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build + push dev image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.version }}
+            ghcr.io/${{ github.repository }}:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  production:
+    name: production release (dispatch)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: compute next version
+        id: ver
+        run: echo "version=$(bunx release-it ${{ inputs.increment }} --release-version)" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: v0 guard
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          if [[ "$v" != 0.* ]]; then
+            echo "repo is v0-only for now; refusing to release $v" >&2
+            exit 1
+          fi
+      - name: release (bump commit + tag + GitHub Release)
+        run: bunx release-it ${{ inputs.increment }} --ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build + push release image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
