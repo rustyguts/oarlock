@@ -1,0 +1,59 @@
+{{- if .Values.valkey.enabled }}
+# Bundled Valkey — pub/sub for live UI updates only, never load-bearing for
+# correctness, so it runs ephemeral (emptyDir, no persistence).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "oarlock.fullname" . }}-valkey
+  labels:
+    {{- include "oarlock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: valkey
+spec:
+  selector:
+    {{- include "oarlock.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: valkey
+  ports:
+    - name: valkey
+      port: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oarlock.fullname" . }}-valkey
+  labels:
+    {{- include "oarlock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: valkey
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "oarlock.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: valkey
+  template:
+    metadata:
+      labels:
+        {{- include "oarlock.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: valkey
+    spec:
+      containers:
+        - name: valkey
+          image: {{ .Values.valkey.image }}
+          ports:
+            - name: valkey
+              containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          {{- with .Values.valkey.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          emptyDir: {}
+{{- end }}

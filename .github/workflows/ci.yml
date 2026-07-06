@@ -56,6 +56,15 @@ jobs:
         # would race (one package's truncate wipes another's seeded rows).
         run: go test -p 1 ./...
 
+  helm:
+    name: helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: chart checks (lint + template assertions)
+        run: ./deploy/chart/test.sh
+
   web:
     name: web (SvelteKit)
     runs-on: ubuntu-latest

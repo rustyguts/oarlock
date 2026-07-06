@@ -1,0 +1,25 @@
+oarlock {{ .Chart.AppVersion }} installed in {{ .Values.mode }} mode.
+
+{{- if eq .Values.mode "simple" }}
+One all-in-one Deployment (UI + API + workers), {{ .Values.replicas.all }} replica(s).
+{{- else }}
+{{ .Values.replicas.api }} api replica(s) serving the UI/API, {{ .Values.replicas.worker }} worker replica(s) executing runs.
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+Open: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+
+No ingress configured. Try it with a port-forward:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "oarlock.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  open http://localhost:{{ .Values.service.port }}
+{{- end }}
+
+{{- if .Values.postgres.enabled }}
+
+NOTE: the bundled single-node Postgres is running. For production, set
+postgres.enabled=false and point config.databaseUrl (or existingSecret) at a
+managed database.
+{{- end }}
