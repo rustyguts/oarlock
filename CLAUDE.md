@@ -14,11 +14,12 @@ docker compose up -d --build web          # rebuild after web/ changes
 cd engine && go build ./... && go vet ./... && go test ./...
 cd engine && go test ./internal/definition/ -run TestValidateCycle   # single test
 
-cd web && npm run build                   # vite build (does NOT typecheck)
-cd web && npm run check                   # typecheck via svelte-check (vite won't catch TS errors)
-cd web && npm run test:ui                 # Playwright visual regression (no backend needed)
-cd web && npm run test:ui:update          # regenerate snapshot baselines after intentional UI changes
-cd web && npx playwright test -g "sidebar"              # single snapshot test
+cd web && bun install                     # install deps (uses bun.lock)
+cd web && bun run build                   # vite build (does NOT typecheck)
+cd web && bun run check                   # typecheck via svelte-check (vite won't catch TS errors)
+cd web && bun run test:ui                 # Playwright visual regression (no backend needed)
+cd web && bun run test:ui:update          # regenerate snapshot baselines after intentional UI changes
+cd web && bunx playwright test -g "sidebar"            # single snapshot test
 ```
 
 Migrations are embedded SQL in `engine/internal/db/migrations/`, applied automatically at API startup in filename order (tracked in `schema_migrations`); River's own tables migrate via `rivermigrate`. There is no down-migration mechanism — dump first (`docker compose exec -T postgres pg_dump -U oarlock oarlock > backups/...`).
@@ -69,7 +70,7 @@ Whenever you change the frontend, **verify by looking at it, not just by buildin
 2. Drive a real browser (Playwright chromium is installed; scratch scripts in `/tmp` work) against http://localhost:3001 — visit the changed screens in **light and dark mode** (`button[aria-label="Toggle theme"]`).
 3. Screenshot and **actually read the pixels** against what was asked: spacing, contrast, active states, phantom backgrounds, overflow.
 4. Iterate until right. Visual bugs compile clean — the sidebar `data-active="false"` bug only showed up in screenshots, twice.
-5. Then regenerate baselines: `npm run test:ui:update && npm run test:ui` (must pass twice).
+5. Then regenerate baselines: `bun run test:ui:update && bun run test:ui` (must pass twice).
 
 ## Visual regression suite (web/tests/)
 

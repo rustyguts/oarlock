@@ -7,7 +7,7 @@ const CORS = {
 };
 
 // Visual regression suite. Any intentional UI change requires regenerating
-// baselines with `npm run test:ui:update` and committing the diff — an
+// baselines with `bun run test:ui:update` and committing the diff — an
 // unexpected snapshot failure means the UI changed when it shouldn't have.
 
 const FROZEN_NOW = new Date('2026-06-12T09:05:00Z');

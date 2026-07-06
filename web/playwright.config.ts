@@ -3,7 +3,7 @@ import { defineConfig } from '@playwright/test';
 // Visual regression tests. The API is fully mocked (tests/mock-api.ts) and
 // the clock frozen, so snapshots are deterministic and need no backend.
 // Baselines are platform-specific (committed for darwin); regenerate with
-// `npm run test:ui:update` after intentional UI changes.
+// `bun run test:ui:update` after intentional UI changes.
 export default defineConfig({
 	testDir: './tests',
 	fullyParallel: true,
@@ -20,7 +20,7 @@ export default defineConfig({
 		}
 	},
 	webServer: {
-		command: 'npm run build && npm run preview -- --port 4173 --strictPort',
+		command: 'bun run build && bun run preview --port 4173 --strictPort',
 		port: 4173,
 		reuseExistingServer: !process.env.CI,
 		timeout: 180_000

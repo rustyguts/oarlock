@@ -8,7 +8,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done
 **Exit criteria: replaced one of your own real automations and trust it.**
 
 ### 0. Quality gates
-- [x] UI snapshot tests: Playwright visual regression in `web/tests` (mocked API, frozen clock, 8 baselines incl. dark mode; `npm run test:ui`, regenerate with `test:ui:update`)
+- [x] UI snapshot tests: Playwright visual regression in `web/tests` (mocked API, frozen clock, 8 baselines incl. dark mode; `bun run test:ui`, regenerate with `test:ui:update`)
 - [x] Engine unit tests (definition/DAG validation)
 
 ### 1. Monorepo + dev stack

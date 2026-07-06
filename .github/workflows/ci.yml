@@ -64,24 +64,20 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          bun-version: latest
       - name: install
-        run: npm ci
+        run: bun install --frozen-lockfile
       - name: typecheck
         # vite build does not typecheck; svelte-check is the real TS gate. It's
-        # a pinned devDependency installed by `npm ci`, run via the package
-        # script so the version is the lockfile's, not npx's latest-at-runtime.
-        run: npm run check
+        # a pinned devDependency installed by `bun install`, run via the package
+        # script so the version is the lockfile's, not bunx's latest-at-runtime.
+        run: bun run check
       - name: build
-        run: npm run build
+        run: bun run build
       - name: unit tests
-        # --if-present keeps CI green whether or not a "test:unit" (vitest)
-        # script is present yet.
-        run: npm run test:unit --if-present
-      # The Playwright visual regression suite (npm run test:ui) is intentionally
+        run: bun run test:unit
+      # The Playwright visual regression suite (bun run test:ui) is intentionally
       # NOT run in CI: its snapshot baselines are platform-suffixed (-darwin) and
       # would fail on Ubuntu runners. It stays a local pre-commit check.
