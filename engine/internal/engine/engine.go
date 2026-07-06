@@ -117,9 +117,10 @@ func (e *Engine) Stop(ctx context.Context) error { return e.Client.Stop(ctx) }
 type RunOpts struct {
 	// TriggerID records which trigger fired this run (nil for manual API runs).
 	TriggerID *uuid.UUID
-	// IdempotencyKey, when non-empty, dedupes runs within a workspace via the
-	// unique (workspace_id, idempotency_key) index: a second start with the
-	// same key is a silent no-op returning the existing run (created=false).
+	// IdempotencyKey, when non-empty, dedupes runs of THIS workflow: a second
+	// start with the same key returns the existing run (created=false). The key
+	// is scoped to the workflow before storage (StartRunOpts), so the same
+	// caller key on a different workflow starts its own run.
 	IdempotencyKey string
 }
 
@@ -160,13 +161,19 @@ func (e *Engine) StartRunOpts(ctx context.Context, workspaceID, workflowID uuid.
 
 	var key *string
 	if opts.IdempotencyKey != "" {
-		key = &opts.IdempotencyKey
+		// Scope the stored key to the workflow. The unique index is
+		// (workspace_id, idempotency_key), so without this a caller key reused
+		// across two workflows in one workspace would let the second start
+		// silently return the first's run. Triggered runs additionally
+		// namespace by trigger in their key prefix (api hooks / scheduler).
+		scoped := workflowID.String() + ":" + opts.IdempotencyKey
+		key = &scoped
 	}
 
 	var runID uuid.UUID
 	if key != nil {
 		// on-conflict-do-nothing returns no row when the key already exists;
-		// that's the replay path — select the existing run and skip the job.
+		// that's the replay path — return the existing run and skip the job.
 		err = tx.QueryRow(ctx, `
 			insert into runs (workspace_id, workflow_id, workflow_version_id, status, input, trigger_id, idempotency_key)
 			values ($1, $2, $3, 'queued', $4, $5, $6)
@@ -174,11 +181,17 @@ func (e *Engine) StartRunOpts(ctx context.Context, workspaceID, workflowID uuid.
 			returning id`,
 			workspaceID, workflowID, versionID, inputJSON, opts.TriggerID, key).Scan(&runID)
 		if errors.Is(err, pgx.ErrNoRows) {
-			var existing uuid.UUID
+			// The scoped key embeds workflowID, so a match is same-workflow by
+			// construction; assert it so the invariant holds even if a future
+			// caller bypasses scoping.
+			var existing, existingWorkflow uuid.UUID
 			if err := tx.QueryRow(ctx, `
-				select id from runs where workspace_id = $1 and idempotency_key = $2`,
-				workspaceID, opts.IdempotencyKey).Scan(&existing); err != nil {
+				select id, workflow_id from runs where workspace_id = $1 and idempotency_key = $2`,
+				workspaceID, *key).Scan(&existing, &existingWorkflow); err != nil {
 				return uuid.Nil, false, err
+			}
+			if existingWorkflow != workflowID {
+				return uuid.Nil, false, fmt.Errorf("idempotency key already used by another workflow")
 			}
 			if err := tx.Commit(ctx); err != nil {
 				return uuid.Nil, false, err

@@ -72,8 +72,10 @@ jobs:
       - name: install
         run: npm ci
       - name: typecheck
-        # vite build does not typecheck; svelte-check is the real TS gate.
-        run: npx svelte-check --tsconfig ./tsconfig.json
+        # vite build does not typecheck; svelte-check is the real TS gate. It's
+        # a pinned devDependency installed by `npm ci`, run via the package
+        # script so the version is the lockfile's, not npx's latest-at-runtime.
+        run: npm run check
       - name: build
         run: npm run build
       - name: unit tests

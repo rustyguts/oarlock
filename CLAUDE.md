@@ -15,7 +15,7 @@ cd engine && go build ./... && go vet ./... && go test ./...
 cd engine && go test ./internal/definition/ -run TestValidateCycle   # single test
 
 cd web && npm run build                   # vite build (does NOT typecheck)
-cd web && npx svelte-check --tsconfig ./tsconfig.json   # typecheck (vite won't catch TS errors)
+cd web && npm run check                   # typecheck via svelte-check (vite won't catch TS errors)
 cd web && npm run test:ui                 # Playwright visual regression (no backend needed)
 cd web && npm run test:ui:update          # regenerate snapshot baselines after intentional UI changes
 cd web && npx playwright test -g "sidebar"              # single snapshot test

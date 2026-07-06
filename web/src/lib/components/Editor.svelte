@@ -277,18 +277,24 @@
 		markDirty();
 	}
 
-	// Rewrite `steps.<oldKey>` references in a config's string values, avoiding
-	// partial matches (steps.fetch must not touch steps.fetch2 or steps.fetch-b).
+	// Build a rewriter for `steps.<oldKey>` → `steps.<newKey>` in an expression
+	// string, avoiding partial matches (steps.fetch must not touch steps.fetch2
+	// or steps.fetch-b).
+	function stepRefRewriter(oldKey: string, newKey: string): (s: string) => string {
+		const esc = oldKey.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+		const re = new RegExp(`(?<![\\w$])steps\\.${esc}(?![\\w-])`, 'g');
+		return (s) => s.replace(re, `steps.${newKey}`);
+	}
+
 	function rewriteConfigRefs(
 		config: Record<string, unknown>,
 		oldKey: string,
 		newKey: string
 	): Record<string, unknown> {
-		const esc = oldKey.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
-		const re = new RegExp(`(?<![\\w$])steps\\.${esc}(?![\\w-])`, 'g');
+		const rewrite = stepRefRewriter(oldKey, newKey);
 		const out: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(config)) {
-			out[k] = typeof v === 'string' ? v.replace(re, `steps.${newKey}`) : v;
+			out[k] = typeof v === 'string' ? rewrite(v) : v;
 		}
 		return out;
 	}
@@ -298,10 +304,17 @@
 			flash(`Step key "${newId}" already exists`, 'err');
 			return false;
 		}
+		// Rewrite references in both config strings and `if` guard expressions,
+		// so renaming a step never leaves a stale steps.<old> behind.
+		const rewrite = stepRefRewriter(oldId, newId);
 		nodes = nodes.map((n) => ({
 			...n,
 			id: n.id === oldId ? newId : n.id,
-			data: { ...n.data, config: rewriteConfigRefs(n.data.config, oldId, newId) }
+			data: {
+				...n.data,
+				config: rewriteConfigRefs(n.data.config, oldId, newId),
+				if: typeof n.data.if === 'string' ? rewrite(n.data.if) : n.data.if
+			}
 		}));
 		edges = edges.map((e) => ({
 			...e,

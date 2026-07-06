@@ -52,10 +52,12 @@ func TestEngineRunOptsIdempotencyPrefix(t *testing.T) {
 	if opts.TriggerID == nil || *opts.TriggerID != tid {
 		t.Fatalf("trigger id not carried")
 	}
-	// Header → hook:-prefixed key so it can't collide with cron: keys.
+	// Header → key namespaced by trigger (and "hook:" so it can't collide with
+	// cron: keys), so distinct triggers sharing a caller key stay distinct.
 	opts = engineRunOpts(tid, "abc-123")
-	if opts.IdempotencyKey != "hook:abc-123" {
-		t.Fatalf("key = %q, want hook:abc-123", opts.IdempotencyKey)
+	want := "hook:" + tid.String() + ":abc-123"
+	if opts.IdempotencyKey != want {
+		t.Fatalf("key = %q, want %q", opts.IdempotencyKey, want)
 	}
 }
 

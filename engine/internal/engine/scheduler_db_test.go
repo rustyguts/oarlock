@@ -76,8 +76,10 @@ func TestSchedulerFiresOnce(t *testing.T) {
 	if gotTrigger != tid {
 		t.Fatalf("run trigger_id = %s, want %s", gotTrigger, tid)
 	}
-	if !strings.HasPrefix(idemKey, "cron:"+tid.String()+":") {
-		t.Fatalf("idempotency key = %q, want prefix cron:%s:", idemKey, tid)
+	// Stored key is scoped by workflow (StartRunOpts) around the scheduler's
+	// cron:<trigger>:<occurrence> key.
+	if !strings.HasPrefix(idemKey, s.wfID.String()+":cron:"+tid.String()+":") {
+		t.Fatalf("idempotency key = %q, want prefix %s:cron:%s:", idemKey, s.wfID, tid)
 	}
 	if !strings.Contains(input, "scheduled_for") {
 		t.Fatalf("run input = %q, want scheduled_for", input)
@@ -92,9 +94,11 @@ func TestSchedulerFiresOnce(t *testing.T) {
 	}
 
 	// A concurrent duplicate insert with the same key is a silent no-op that
-	// returns the existing run with created=false.
+	// returns the existing run with created=false. Pass the caller-level key
+	// (StartRunOpts re-derives the same stored, workflow-scoped key).
+	callerKey := strings.TrimPrefix(idemKey, s.wfID.String()+":")
 	existingID, created, err := e.StartRunOpts(ctx, s.wsID, s.wfID,
-		map[string]any{"scheduled_for": "x"}, RunOpts{TriggerID: &tid, IdempotencyKey: idemKey})
+		map[string]any{"scheduled_for": "x"}, RunOpts{TriggerID: &tid, IdempotencyKey: callerKey})
 	if err != nil {
 		t.Fatalf("duplicate StartRunOpts: %v", err)
 	}

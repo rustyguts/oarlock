@@ -17,12 +17,15 @@ import (
 )
 
 // engineRunOpts builds RunOpts for a webhook fire: the trigger id for
-// provenance and, when the caller supplied X-Idempotency-Key, a "hook:"-prefixed
-// key so webhook dedup can't collide with cron keys ("cron:...").
+// provenance and, when the caller supplied X-Idempotency-Key, a key namespaced
+// by trigger. The "hook:" prefix separates it from cron keys ("cron:..."), and
+// the trigger id keeps two webhook triggers on the same workflow that happen to
+// share a caller key from deduping into each other. (StartRunOpts further
+// scopes by workflow.)
 func engineRunOpts(triggerID uuid.UUID, idempotencyKey string) engine.RunOpts {
 	opts := engine.RunOpts{TriggerID: &triggerID}
 	if idempotencyKey != "" {
-		opts.IdempotencyKey = "hook:" + idempotencyKey
+		opts.IdempotencyKey = "hook:" + triggerID.String() + ":" + idempotencyKey
 	}
 	return opts
 }
