@@ -197,13 +197,21 @@ test('configuration — secrets list', async ({ page }) => {
 	await expect(page).toHaveScreenshot('configuration-secrets.png');
 });
 
-test('mcp access — token list', async ({ page }) => {
+test('api access — token list', async ({ page }) => {
 	await page.goto('/api-access');
 	await page.waitForSelector('text=MCP endpoint URL');
 	await page.waitForSelector('text=claude-desktop');
 	await page.waitForSelector('text=ci-runner');
 	await settle(page);
 	await expect(page).toHaveScreenshot('api-access-tokens.png');
+});
+
+test('users — admin list', async ({ page }) => {
+	await page.goto('/users');
+	await page.waitForSelector('text=Grace Hopper');
+	await page.waitForSelector('text=must reset');
+	await settle(page);
+	await expect(page).toHaveScreenshot('users-list.png');
 });
 
 test('mcp access — token list, dark', async ({ page }) => {

@@ -157,11 +157,11 @@ teeing redacted records to the process log.
 
 ### Tenancy and cells
 
-Every API request resolves a workspace from the session (cookie auth,
-first-run auto-login as the migration-seeded owner; session tokens stored
-sha256-hashed). All queries filter by `workspace_id`. Programmatic access
-(the `/mcp` endpoint) authenticates via `oak_` workspace API tokens
-(sha256-hashed) — the token *is* the workspace credential.
+Every API request resolves a workspace from the session (password login,
+sha256-hashed session tokens; see §7) or an `oak_` bearer token. All queries
+filter by `workspace_id`. Programmatic access (`/mcp` and the REST API)
+authenticates via `oak_` workspace API tokens (sha256-hashed) — the token
+*is* the workspace credential, scoped to member tier.
 
 Cell-ready foundations laid now (cheap to keep, brutal to retrofit): a
 `cells` table + `cell_id` on workspaces (one row, `cell-0`); routing-by-token
@@ -260,13 +260,21 @@ per-step timeout/retries/if fields, unsaved-changes guard, run-with-input,
 version history + restore, triggers panel); run detail on the **pinned**
 version with per-attempt outputs/errors, suspension cards with resume URLs,
 live SSE updates, log tail with load-older paging; Configuration (secrets +
-dev-key banner), MCP Servers, and MCP Access (token) pages.
+dev-key banner), MCP Servers, API Access (tokens + rotate) pages; auth gate
+(setup / login / forced password change), admin Users page, and a user menu
+(change password / sign out).
 
 **Packaging.** All-in-one Docker image with embedded UI and
 `OARLOCK_MODE=all|api|worker`; Docker Compose stack; Helm chart with simple
 (all-in-one) and scalable (api + worker) modes, optional bundled
 Postgres/Valkey, ingress/TLS, existing-secret support, and a chart check
 script run in CI; GHCR publishing workflow (multi-arch amd64/arm64).
+
+**Auth.** Password login (argon2id), first-run setup that claims the admin,
+admin-created users with forced first-login password change and last-admin
+guards, sessions with the auto-login bootstrap removed, and `oak_` bearer
+tokens authenticating the full `/v1` API at member tier with the admin
+surface excluded and in-place rotation (project.md §7).
 
 **Tests + CI.** DB-backed engine tests (diamond DAG, failure, retry,
 cancel-vs-late-result, advance idempotency, context scoping, reaper,
@@ -286,8 +294,9 @@ Postgres service, `-p 1`; web svelte-check/build/vitest).
   for cloud).
 - Per-workspace concurrency cap (the fairness knob and pricing lever) not
   implemented.
-- Built-in auth is designed but not built — see §7. Until it ships, the
-  auto-login bootstrap remains and instances must not be network-exposed.
+- Built-in auth shipped (§7): password login, admin-created users, full-API
+  bearer tokens. SSRF guard on `http.request`/MCP URLs is still the remaining
+  blocker before a network-exposed (non-tailnet) deployment.
 
 ### Phase 2 — multi-tenant cloud alpha (exit: 10–20 external workspaces, zero isolation incidents)
 
@@ -321,12 +330,14 @@ Postgres service, `-p 1`; web svelte-check/build/vitest).
 - Log retention: weekly partition maintenance + `DROP PARTITION`.
 - goja frozen-context hardening + memory limits.
 
-## 7. Built-in authentication (design v1 — accepted, building next)
+## 7. Built-in authentication (v1 — shipped)
 
 Simple auth out of the box for self-hosters: first visit creates the admin,
 everything requires login, admins manage users and API keys. No SMTP, no
 external IdP, no new infrastructure — Postgres and the existing session
-mechanism carry all of it.
+mechanism carry all of it. Implemented in `internal/api` (`auth.go`,
+`users.go`, `password.go`, `ratelimit.go`; migration 0010) and the web
+`AuthGate` / `session.svelte.ts` / `/users` / `/account` surfaces.
 
 ### Decisions
 
@@ -409,14 +420,15 @@ can graduate from tailnet-only — after the SSRF guard also lands (§6).
 OIDC/SSO (Phase 3, paid), email flows, invite links, per-key token scopes,
 2FA, audit log (Phase 3), multi-workspace membership.
 
-### Build order (each lands green)
+### Status
 
-1. Engine: migration + argon2id + setup/login/logout/password endpoints +
-   `WithAuth` rework + rate limit; bootstrap removed; DB-backed tests.
-2. Engine: users CRUD + last-admin guards; bearer tokens on `/v1` + rotate.
-3. Web: setup/login/change-password + route guard + user menu.
-4. Web: Users page + API Access rotate; regenerate snapshot baselines.
-5. Docs + houston follow-up (exposure decision).
+Shipped (all steps): migration 0010, argon2id, setup/login/logout/password,
+`WithAuth` rework + login rate limit (bootstrap removed), users CRUD with
+last-admin guards, bearer tokens on `/v1` + rotate; web setup/login/
+change-password gate, route guard (`session.svelte.ts`), user menu, Users
+page, API Access rotate. Verified with DB-backed engine tests and a live
+setup→login→token-run browser pass. Remaining follow-up: the houston
+deployment can move off tailnet-only once the SSRF guard (§6) also lands.
 
 ## 8. Platform administration (decision, not scheduled work)
 

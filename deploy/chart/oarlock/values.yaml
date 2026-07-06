@@ -40,6 +40,10 @@ config:
   # Extra CORS origins (comma-separated). The embedded UI is same-origin, so
   # this is only for external tooling / dev UIs.
   allowedOrigins: ""
+  # Session-cookie Secure flag: "auto" (default when empty) sets it when the
+  # request arrived over TLS (X-Forwarded-Proto from the ingress); "always"
+  # forces it (use behind a TLS-terminating ingress); "never" for plain HTTP.
+  secureCookies: ""
 
 # Name of an existing Secret to use instead of config.masterKey/databaseUrl.
 # Expected keys: OARLOCK_MASTER_KEY, and DATABASE_URL when postgres.enabled

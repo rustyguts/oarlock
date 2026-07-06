@@ -144,45 +144,69 @@ export interface ApiToken {
 }
 
 // ApiError carries the response payload — e.g. the list of workflows that
-// block a delete (409).
+// block a delete (409), or the setup_required flag on a 401.
 export class ApiError extends Error {
 	status: number;
 	workflows?: string[];
-	constructor(status: number, message: string, workflows?: string[]) {
+	setupRequired?: boolean;
+	constructor(status: number, message: string, workflows?: string[], setupRequired?: boolean) {
 		super(message);
 		this.status = status;
 		this.workflows = workflows;
+		this.setupRequired = setupRequired;
 	}
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
 	const res = await fetch(`${BASE}${path}`, {
 		headers: { 'Content-Type': 'application/json' },
-		credentials: 'include', // session cookie (auto-login bootstrap)
+		credentials: 'include', // session cookie
 		...init
 	});
 	if (!res.ok) {
 		let message = `${res.status} ${res.statusText}`;
 		let workflows: string[] | undefined;
+		let setupRequired: boolean | undefined;
 		try {
 			const body = await res.json();
 			if (body.error) message = body.error;
 			if (Array.isArray(body.workflows)) workflows = body.workflows;
+			if (typeof body.setup_required === 'boolean') setupRequired = body.setup_required;
 		} catch {
 			/* keep default message */
 		}
-		throw new ApiError(res.status, message, workflows);
+		throw new ApiError(res.status, message, workflows, setupRequired);
 	}
 	if (res.status === 204) return undefined as T;
 	return res.json();
 }
 
 export interface Me {
-	user: { id: string; email: string; name: string | null };
+	// "session" for a logged-in user, "token" for API-token access. user is
+	// null for token principals.
+	auth_kind: 'session' | 'token';
+	user: { id: string; email: string; name: string | null } | null;
 	workspace: { id: string; name: string; slug?: string };
 	role: string;
+	must_change_password: boolean;
 	// Present on newer API builds; absent on older ones — treat missing as "not dev".
 	vault?: { dev_key: boolean };
+}
+
+// A user account in the workspace (admin Users page).
+export interface User {
+	id: string;
+	email: string;
+	name: string | null;
+	role: string;
+	must_change_password: boolean;
+	created_at: string;
+	last_seen_at: string | null;
+}
+
+// admin() reports whether a role can manage users and API tokens.
+export function isAdminRole(role: string | undefined): boolean {
+	return role === 'owner' || role === 'admin';
 }
 
 export interface Stats {
@@ -223,6 +247,37 @@ export interface Stats {
 
 export const api = {
 	me: () => req<Me>('/v1/me'),
+	// Auth. setup claims the first admin (first run only); login/logout manage
+	// the session; changePassword needs the current password unless the account
+	// was flagged must_change_password.
+	setup: (email: string, name: string, password: string) =>
+		req<{ ok: boolean }>('/v1/setup', {
+			method: 'POST',
+			body: JSON.stringify({ email, name, password })
+		}),
+	login: (email: string, password: string) =>
+		req<{ ok: boolean }>('/v1/login', {
+			method: 'POST',
+			body: JSON.stringify({ email, password })
+		}),
+	logout: () => req<void>('/v1/logout', { method: 'POST' }),
+	changePassword: (newPassword: string, currentPassword?: string) =>
+		req<{ ok: boolean }>('/v1/password', {
+			method: 'POST',
+			body: JSON.stringify({ new_password: newPassword, current_password: currentPassword ?? '' })
+		}),
+	// Users (admin only).
+	listUsers: () => req<User[]>('/v1/users'),
+	createUser: (u: { email: string; name?: string; password: string; role: string }) =>
+		req<{ id: string }>('/v1/users', { method: 'POST', body: JSON.stringify(u) }),
+	updateUser: (id: string, patch: { name?: string; role?: string }) =>
+		req<{ id: string }>(`/v1/users/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+	deleteUser: (id: string) => req<void>(`/v1/users/${id}`, { method: 'DELETE' }),
+	resetUserPassword: (id: string, password: string) =>
+		req<{ id: string }>(`/v1/users/${id}/reset-password`, {
+			method: 'POST',
+			body: JSON.stringify({ password })
+		}),
 	stats: () => req<Stats>('/v1/stats'),
 	stepTypes: () => req<StepType[]>('/v1/step-types'),
 	listWorkflows: () => req<Workflow[]>('/v1/workflows'),
@@ -291,6 +346,8 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ name })
 		}),
+	rotateApiToken: (id: string) =>
+		req<{ id: string; token: string }>(`/v1/api-tokens/${id}/rotate`, { method: 'POST' }),
 	deleteApiToken: (id: string) => req<void>(`/v1/api-tokens/${id}`, { method: 'DELETE' }),
 	// Secrets (Configuration page): generic values + BYOK api_key type
 	listSecrets: () => req<Secret[]>('/v1/secrets'),

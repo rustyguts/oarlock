@@ -12,6 +12,7 @@
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import PlugIcon from '@lucide/svelte/icons/plug';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
@@ -27,11 +28,15 @@
 	let name = $state('');
 	let saving = $state(false);
 	let dialogError = $state('');
-	// The raw token is returned exactly once — held only until the reveal is dismissed.
-	let revealed = $state<{ name: string; token: string } | null>(null);
+	// The raw token is returned exactly once — held only until the reveal is
+	// dismissed. `title` distinguishes creation from rotation.
+	let revealed = $state<{ name: string; token: string; title: string } | null>(null);
 
 	let confirmOpen = $state(false);
 	let pendingDelete = $state<ApiToken | null>(null);
+
+	let rotateConfirmOpen = $state(false);
+	let pendingRotate = $state<ApiToken | null>(null);
 
 	// Copy-to-clipboard feedback, keyed by the copied value.
 	let copied = $state<string | null>(null);
@@ -73,12 +78,34 @@
 		dialogError = '';
 		try {
 			const res = await api.createApiToken(name.trim());
-			revealed = { name: name.trim(), token: res.token };
+			revealed = { name: name.trim(), token: res.token, title: 'Token created' };
 			await refresh();
 		} catch (e) {
 			dialogError = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
 		} finally {
 			saving = false;
+		}
+	}
+
+	function askRotate(t: ApiToken) {
+		pendingRotate = t;
+		rotateConfirmOpen = true;
+	}
+
+	// Rotate → open the shown-once dialog with the new token. Old secret dies
+	// immediately server-side.
+	async function doRotate() {
+		const t = pendingRotate;
+		if (!t) return;
+		try {
+			const res = await api.rotateApiToken(t.id);
+			revealed = { name: t.name, token: res.token, title: 'Token rotated' };
+			open = true;
+			await refresh();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			pendingRotate = null;
 		}
 	}
 
@@ -111,9 +138,9 @@
 <div class="w-full px-6 py-6">
 	<div class="mb-6 flex items-center justify-between gap-4">
 		<div>
-			<h1 class="text-xl font-semibold">MCP Access</h1>
+			<h1 class="text-xl font-semibold">API Access</h1>
 			<p class="text-muted-foreground text-sm">
-				Let an AI agent drive this workspace over the Model Context Protocol.
+				Bearer tokens for programmatic access — the REST API and the MCP endpoint.
 			</p>
 		</div>
 		<Button onclick={openCreate}><PlusIcon class="size-4" /> Create token</Button>
@@ -133,13 +160,14 @@
 					<PlugIcon class="size-4.5" />
 				</span>
 				<div class="min-w-0">
-					<div class="font-medium">Connect an AI agent to this workspace</div>
+					<div class="font-medium">Use a token as a bearer credential</div>
 					<p class="text-muted-foreground mt-1 text-sm leading-relaxed">
-						Point an MCP client at the URL below and authenticate with a token. Your workflows become
-						callable tools:
-						<span class="text-foreground font-mono text-xs">list_workflows</span>,
-						<span class="text-foreground font-mono text-xs">run_workflow</span>, and
-						<span class="text-foreground font-mono text-xs">get_run_status</span>.
+						Send <code class="text-foreground font-mono text-xs">Authorization: Bearer &lt;token&gt;</code>
+						to call the REST API, or point an MCP client at the URL below so your workflows become
+						callable tools (<span class="text-foreground font-mono text-xs">list_workflows</span>,
+						<span class="text-foreground font-mono text-xs">run_workflow</span>,
+						<span class="text-foreground font-mono text-xs">get_run_status</span>). Tokens can't manage
+						users or other tokens.
 					</p>
 				</div>
 			</div>
@@ -200,6 +228,9 @@
 								</span>
 							</div>
 						</div>
+						<Button variant="outline" size="sm" class="shrink-0" onclick={() => askRotate(t)}>
+							<RotateCwIcon class="size-4" /> Rotate
+						</Button>
 						<Button
 							variant="ghost"
 							size="icon"
@@ -220,7 +251,7 @@
 	<Dialog.Content class="sm:max-w-md">
 		{#if revealed}
 			<Dialog.Header>
-				<Dialog.Title>Token created</Dialog.Title>
+				<Dialog.Title>{revealed.title}</Dialog.Title>
 				<Dialog.Description>
 					Copy “{revealed.name}” now — you won’t be able to see it again.
 				</Dialog.Description>
@@ -248,7 +279,8 @@
 					</div>
 				</div>
 				<p class="text-muted-foreground text-xs">
-					Use it as a bearer token when connecting an MCP client to
+					Send it as <code class="text-foreground font-mono">Authorization: Bearer …</code> to the API,
+					or as the bearer token for an MCP client at
 					<code class="text-foreground font-mono">{endpoint}</code>.
 				</p>
 			</div>
@@ -289,8 +321,19 @@
 	bind:open={confirmOpen}
 	title="Delete token?"
 	description={pendingDelete
-		? `"${pendingDelete.name}" will stop working immediately for any MCP client using it.`
+		? `"${pendingDelete.name}" will stop working immediately for anything using it.`
 		: ''}
 	confirmText="Delete"
 	onconfirm={confirmDelete}
+/>
+
+<ConfirmDialog
+	bind:open={rotateConfirmOpen}
+	title="Rotate token?"
+	description={pendingRotate
+		? `"${pendingRotate.name}" gets a new secret. The current one stops working immediately — update anything using it.`
+		: ''}
+	confirmText="Rotate"
+	destructive={false}
+	onconfirm={doRotate}
 />

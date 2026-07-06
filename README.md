@@ -51,15 +51,17 @@ make down    # stop everything
 Ports: oarlock (UI + API) **9000**, Postgres 5432 (`oarlock`/`oarlock`),
 Valkey 6379.
 
-Create a workflow in the UI, drag steps onto the canvas (HTTP Request,
+On first visit, create the admin account (the first account owns the
+workspace); afterwards everyone signs in, and admins add more users under
+**Users**. Then create a workflow, drag steps onto the canvas (HTTP Request,
 Transform, Code, Delay, Wait for Callback, AI Prompt, MCP Tool), connect
-them, then hit Run. String config fields take `{{ }}` expressions against
+them, and hit Run. String config fields take `{{ }}` expressions against
 `input`, upstream `steps.<key>` outputs, and `secrets.<name>`, e.g.
 `{{ steps.fetch.body.title }}`.
 
 Workflows fire from webhooks (`POST /hooks/{workspace}/{path}`), cron
-schedules, the UI, or an MCP client pointed at `/mcp` with a workspace API
-token (created under **MCP Access**).
+schedules, the UI, or a bearer token (created under **API Access**) driving
+the REST API or an MCP client at `/mcp`.
 
 ## Kubernetes (Helm)
 
