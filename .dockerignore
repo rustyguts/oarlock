@@ -1,0 +1,13 @@
+.git
+.github
+docs
+backups
+deploy
+web/node_modules
+web/build
+web/.svelte-kit
+web/test-results
+web/playwright-report
+web/tests/__snapshots__
+engine/internal/webui/dist
+*.md

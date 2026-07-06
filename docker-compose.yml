@@ -30,14 +30,17 @@ services:
       timeout: 3s
       retries: 10
 
-  api:
-    build: ./engine
+  # One image serves everything: web UI + API + workers (OARLOCK_MODE=all is
+  # the default). For an HA-shaped stack, run the same image twice with
+  # OARLOCK_MODE=api and OARLOCK_MODE=worker instead.
+  oarlock:
+    build: .
     environment:
       DATABASE_URL: postgres://oarlock:oarlock@postgres:5432/oarlock
       VALKEY_ADDR: valkey:6379
       # dev-only key; generate your own for real deployments: openssl rand -hex 32
       OARLOCK_MASTER_KEY: 8c1f2c9f3a4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7
-      # credentialed CORS allowlist (comma-separated exact origins); default shown
+      # only needed when the UI runs on a different origin (bun run dev)
       OARLOCK_ALLOWED_ORIGINS: http://localhost:3001
     ports:
       - "9000:9000"
@@ -46,15 +49,6 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
-
-  web:
-    build: ./web
-    environment:
-      PUBLIC_API_URL: http://localhost:9000
-    ports:
-      - "3001:3000"
-    depends_on:
-      - api
 
 volumes:
   pgdata:
