@@ -4,6 +4,8 @@ import BracesIcon from '@lucide/svelte/icons/braces';
 import TimerIcon from '@lucide/svelte/icons/timer';
 import SparklesIcon from '@lucide/svelte/icons/sparkles';
 import WrenchIcon from '@lucide/svelte/icons/wrench';
+import SquareCodeIcon from '@lucide/svelte/icons/square-code';
+import PauseIcon from '@lucide/svelte/icons/pause';
 import PuzzleIcon from '@lucide/svelte/icons/puzzle';
 
 // One icon per step type, shared by the palette and the canvas nodes.
@@ -12,7 +14,9 @@ const icons: Record<string, Component> = {
 	transform: BracesIcon,
 	delay: TimerIcon,
 	'ai.prompt': SparklesIcon,
-	'mcp.tool': WrenchIcon
+	'mcp.tool': WrenchIcon,
+	'code.js': SquareCodeIcon,
+	'wait.callback': PauseIcon
 };
 
 export function stepIcon(type: string): Component {

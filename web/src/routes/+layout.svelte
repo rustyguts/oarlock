@@ -17,6 +17,7 @@
 	let section = $derived.by(() => {
 		const p = page.url.pathname;
 		if (p.startsWith('/mcp')) return 'MCP Servers';
+		if (p.startsWith('/api-access')) return 'MCP Access';
 		if (p.startsWith('/configuration')) return 'Configuration';
 		if (p.startsWith('/runs/')) return 'Run detail';
 		if (p.includes('/runs')) return 'Run history';

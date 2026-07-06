@@ -1,9 +1,13 @@
-FROM node:24-alpine AS build
+FROM oven/bun:1-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 COPY . .
-RUN npm run build && npm prune --omit=dev
+RUN bun run build
+# Reduce to production dependencies for the runtime image. --ignore-scripts
+# skips the `prepare` (svelte-kit sync) lifecycle hook, which needs devDeps and
+# already ran during the full install above.
+RUN rm -rf node_modules && bun install --frozen-lockfile --production --ignore-scripts
 
 FROM node:24-alpine
 WORKDIR /app

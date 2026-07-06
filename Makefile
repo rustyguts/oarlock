@@ -11,7 +11,7 @@ logs:
 
 build:
 	cd engine && go build ./...
-	cd web && npm run build
+	cd web && bun run build
 
 test:
 	cd engine && go test ./...

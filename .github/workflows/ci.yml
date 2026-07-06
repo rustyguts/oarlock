@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  engine:
+    name: engine (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: engine
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: oarlock
+          POSTGRES_PASSWORD: oarlock
+          POSTGRES_DB: oarlock
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oarlock"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The DB-backed engine tests create this database on the service (from the
+      # maintenance "oarlock" DB) and migrate it; without this they self-skip.
+      DATABASE_URL_TEST: postgres://oarlock:oarlock@localhost:5432/oarlock_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
+      - name: build
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: test
+        # -p 1 runs package test binaries serially. The DB-backed tests in
+        # internal/engine and internal/api share the one DATABASE_URL_TEST
+        # database and truncate between tests, so parallel package binaries
+        # would race (one package's truncate wipes another's seeded rows).
+        run: go test -p 1 ./...
+
+  web:
+    name: web (SvelteKit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: install
+        run: bun install --frozen-lockfile
+      - name: typecheck
+        # vite build does not typecheck; svelte-check is the real TS gate. It's
+        # a pinned devDependency installed by `bun install`, run via the package
+        # script so the version is the lockfile's, not bunx's latest-at-runtime.
+        run: bun run check
+      - name: build
+        run: bun run build
+      - name: unit tests
+        run: bun run test:unit
+      # The Playwright visual regression suite (bun run test:ui) is intentionally
+      # NOT run in CI: its snapshot baselines are platform-suffixed (-darwin) and
+      # would fail on Ubuntu runners. It stays a local pre-commit check.

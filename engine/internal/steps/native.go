@@ -88,22 +88,35 @@ func (e *Transform) Execute(ctx context.Context, in TaskInput) (TaskOutput, erro
 }
 
 // --- delay ---
-// v0: in-process wait (a parked goroutine is ~free in Go). True suspension
-// (suspensions row + scheduled resume, freeing the worker slot) lands with
-// long-horizon waits; the table is already in the schema.
+// Short waits park in-process (a blocked goroutine is ~free in Go). Long waits
+// suspend the task instead — freeing the worker slot — and resume via a
+// scheduled job the engine enqueues from the Suspend signal (design §4.1).
 
 type Delay struct{}
 
-const maxDelay = 5 * time.Minute
+const (
+	maxInProcessDelay = 5 * time.Minute     // above this the task suspends
+	maxDelay          = 30 * 24 * time.Hour // absolute ceiling for a suspended delay
+)
 
 func (e *Delay) Execute(ctx context.Context, in TaskInput) (TaskOutput, error) {
 	seconds := toFloat(in.Config["seconds"])
-	d := time.Duration(seconds * float64(time.Second))
-	if d <= 0 {
+	if seconds <= 0 {
 		return TaskOutput{}, fmt.Errorf("delay: seconds must be > 0")
 	}
+	d := time.Duration(seconds * float64(time.Second))
 	if d > maxDelay {
-		return TaskOutput{}, fmt.Errorf("delay: max %s for in-process delay", maxDelay)
+		return TaskOutput{}, fmt.Errorf("delay: max %s", maxDelay)
+	}
+	// Long wait: suspend and let the engine schedule the resume. The Output is
+	// the value the task carries both while suspended and after it resumes.
+	if d > maxInProcessDelay {
+		resumeAt := time.Now().Add(d)
+		return TaskOutput{}, &Suspend{
+			Kind:     "delay",
+			ResumeAt: &resumeAt,
+			Output:   map[string]any{"waited_seconds": seconds},
+		}
 	}
 	select {
 	case <-ctx.Done():

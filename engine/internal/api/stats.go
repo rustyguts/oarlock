@@ -10,17 +10,17 @@ import (
 // scoped to the session workspace.
 
 type statsTotals struct {
-	Workflows     int     `json:"workflows"`
-	Runs          int     `json:"runs"`
-	Succeeded     int     `json:"succeeded"`
-	Failed        int     `json:"failed"`
-	Canceled      int     `json:"canceled"`
-	Active        int     `json:"active"`
-	Tasks         int     `json:"tasks"`
-	LogLines      int     `json:"log_lines"`
-	Secrets       int     `json:"secrets"`
-	MCPServers    int     `json:"mcp_servers"`
-	AvgDurationMS *int    `json:"avg_duration_ms"`
+	Workflows     int      `json:"workflows"`
+	Runs          int      `json:"runs"`
+	Succeeded     int      `json:"succeeded"`
+	Failed        int      `json:"failed"`
+	Canceled      int      `json:"canceled"`
+	Active        int      `json:"active"`
+	Tasks         int      `json:"tasks"`
+	LogLines      int      `json:"log_lines"`
+	Secrets       int      `json:"secrets"`
+	MCPServers    int      `json:"mcp_servers"`
+	AvgDurationMS *int     `json:"avg_duration_ms"`
 	SuccessRate   *float64 `json:"success_rate"` // succeeded / terminal
 }
 

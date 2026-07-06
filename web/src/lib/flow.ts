@@ -1,10 +1,13 @@
 import type { Node, Edge } from '@xyflow/svelte';
 import type { Definition, Step } from './api';
+import { now } from './clock.svelte';
 
 export interface StepNodeData extends Record<string, unknown> {
 	stepType: string;
 	config: Record<string, unknown>;
 	retries?: number;
+	timeout?: number; // per-step timeout in seconds
+	if?: string; // JS run-condition; falsy skips the step (empty = always run)
 	status?: string; // task status during a run
 }
 
@@ -19,7 +22,7 @@ export function definitionToFlow(def: Definition): { nodes: StepNode[]; edges: E
 		id: s.key,
 		type: 'step',
 		position: { x: s.ui?.x ?? 80 + i * 240, y: s.ui?.y ?? 120 },
-		data: { stepType: s.type, config: s.config ?? {}, retries: s.retries }
+		data: { stepType: s.type, config: s.config ?? {}, retries: s.retries, timeout: s.timeout, if: s.if }
 	}));
 	const edges: Edge[] = [];
 	for (const s of def.steps ?? []) {
@@ -39,6 +42,8 @@ export function flowToDefinition(name: string, nodes: StepNode[], edges: Edge[])
 			...(needs.length ? { needs } : {}),
 			config: n.data.config,
 			...(n.data.retries ? { retries: n.data.retries } : {}),
+			...(n.data.timeout ? { timeout: n.data.timeout } : {}),
+			...(n.data.if ? { if: n.data.if } : {}),
 			ui: { x: Math.round(n.position.x), y: Math.round(n.position.y) }
 		};
 	});
@@ -59,7 +64,9 @@ export const statusColors: Record<string, string> = {
 	suspended: 'border-amber-400 bg-amber-50 dark:border-amber-500 dark:bg-amber-950',
 	succeeded: 'border-emerald-500 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-950',
 	failed: 'border-red-500 bg-red-50 dark:border-red-500 dark:bg-red-950',
-	skipped: 'border-border bg-muted',
+	// Skipped: bypassed by a falsy `if` — neutral gray, dashed border so it reads
+	// as "not run" rather than queued (solid) or failed (red).
+	skipped: 'border-border border-dashed bg-muted',
 	canceled: 'border-border bg-muted'
 };
 
@@ -73,8 +80,8 @@ export const statusBadges: Record<string, string> = {
 	canceled: 'bg-muted text-muted-foreground'
 };
 
-// Postgres ::text timestamps ("2026-06-12 00:27:14.7+00") → ISO 8601.
-function pgDate(t: string): number {
+// Postgres ::text timestamps ("2026-06-12 00:27:14.7+00") → epoch ms.
+export function pgDate(t: string): number {
 	return new Date(t.replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00')).getTime();
 }
 
@@ -84,7 +91,7 @@ export function fmtTime(t: string | null): string {
 
 export function fmtRelative(t: string | null): string {
 	if (!t) return '—';
-	const s = Math.max(0, Date.now() - pgDate(t)) / 1000;
+	const s = Math.max(0, now() - pgDate(t)) / 1000;
 	if (s < 10) return 'just now';
 	if (s < 60) return `${Math.floor(s)}s ago`;
 	if (s < 3600) return `${Math.floor(s / 60)}m ago`;
@@ -92,12 +99,16 @@ export function fmtRelative(t: string | null): string {
 	return `${Math.floor(s / 86400)}d ago`;
 }
 
-export function fmtDuration(start: string | null, end: string | null): string {
-	if (!start) return '—';
-	const s = pgDate(start);
-	const e = end ? pgDate(end) : Date.now();
-	const ms = e - s;
-	if (ms < 1000) return `${ms}ms`;
+// Human-friendly duration from a raw millisecond count.
+export function fmtMS(ms: number | null): string {
+	if (ms == null) return '—';
+	if (ms < 1000) return `${Math.round(ms)}ms`;
 	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
 	return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+}
+
+export function fmtDuration(start: string | null, end: string | null): string {
+	if (!start) return '—';
+	// Open-ended (still running) durations tick live off the shared clock.
+	return fmtMS((end ? pgDate(end) : now()) - pgDate(start));
 }

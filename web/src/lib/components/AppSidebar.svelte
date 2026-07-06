@@ -6,6 +6,7 @@
 	import LayoutDashboardIcon from '@lucide/svelte/icons/layout-dashboard';
 	import WorkflowIcon from '@lucide/svelte/icons/workflow';
 	import ServerIcon from '@lucide/svelte/icons/server';
+	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import Settings2Icon from '@lucide/svelte/icons/settings-2';
 
 	let { me = null }: { me?: Me | null } = $props();
@@ -14,6 +15,7 @@
 		{ title: 'Dashboard', href: '/', icon: LayoutDashboardIcon },
 		{ title: 'Workflows', href: '/workflows', icon: WorkflowIcon },
 		{ title: 'MCP Servers', href: '/mcp', icon: ServerIcon },
+		{ title: 'MCP Access', href: '/api-access', icon: KeyRoundIcon },
 		{ title: 'Configuration', href: '/configuration', icon: Settings2Icon }
 	];
 

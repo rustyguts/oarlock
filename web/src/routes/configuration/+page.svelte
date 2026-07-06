@@ -9,10 +9,14 @@
 	import * as Card from '$lib/components/ui/card/index.js';
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import * as Select from '$lib/components/ui/select/index.js';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import ShieldIcon from '@lucide/svelte/icons/shield';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
+	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
+	import XIcon from '@lucide/svelte/icons/x';
 
 	const PROVIDERS = [
 		{ value: 'anthropic', label: 'Anthropic', hint: 'sk-ant-…' },
@@ -31,6 +35,10 @@
 	let secrets = $state<Secret[]>([]);
 	let error = $state('');
 	let loading = $state(true);
+	// Dev-key warning: secrets are encrypted with the built-in key unless
+	// OARLOCK_MASTER_KEY is set. Older APIs omit the field — treat as not-dev.
+	let devKey = $state(false);
+	let bannerDismissed = $state(false);
 
 	let open = $state(false);
 	let name = $state('');
@@ -39,6 +47,25 @@
 	let value = $state('');
 	let saving = $state(false);
 	let dialogError = $state('');
+
+	let confirmOpen = $state(false);
+	let pendingDelete = $state<Secret | null>(null);
+
+	// Rotate dialog
+	let rotateOpen = $state(false);
+	let rotateTarget = $state<Secret | null>(null);
+	let rotateValue = $state('');
+	let rotating = $state(false);
+	let rotateError = $state('');
+
+	// Transient success flash
+	let notice = $state('');
+	let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+	function flashOk(msg: string) {
+		notice = msg;
+		if (noticeTimer) clearTimeout(noticeTimer);
+		noticeTimer = setTimeout(() => (notice = ''), 2500);
+	}
 
 	let typeLabel = $derived(TYPES.find((t) => t.value === type)?.label ?? type);
 	let providerLabel = $derived(PROVIDERS.find((p) => p.value === provider)?.label ?? provider);
@@ -53,7 +80,15 @@
 			loading = false;
 		}
 	}
-	onMount(refresh);
+	onMount(() => {
+		refresh();
+		api
+			.me()
+			.then((me) => (devKey = me.vault?.dev_key === true))
+			.catch(() => {
+				/* banner stays hidden if we can't tell */
+			});
+	});
 
 	function openCreate() {
 		name = '';
@@ -64,7 +99,9 @@
 		open = true;
 	}
 
-	async function save() {
+	async function save(e?: SubmitEvent) {
+		e?.preventDefault();
+		if (saving || !name.trim() || !value.trim()) return;
 		saving = true;
 		dialogError = '';
 		try {
@@ -83,8 +120,39 @@
 		}
 	}
 
-	async function remove(s: Secret) {
-		if (!confirm(`Remove secret "${s.name}"? Workflows using it will stop working.`)) return;
+	function openRotate(s: Secret) {
+		rotateTarget = s;
+		rotateValue = '';
+		rotateError = '';
+		rotateOpen = true;
+	}
+
+	async function rotate(e?: SubmitEvent) {
+		e?.preventDefault();
+		const s = rotateTarget;
+		if (!s || rotating || !rotateValue.trim()) return;
+		rotating = true;
+		rotateError = '';
+		try {
+			await api.rotateSecret(s.id, rotateValue.trim());
+			rotateOpen = false;
+			await refresh(); // value_hint reflects the new value
+			flashOk(`Rotated ${s.name}`);
+		} catch (err) {
+			rotateError = err instanceof Error ? err.message : String(err);
+		} finally {
+			rotating = false;
+		}
+	}
+
+	function remove(s: Secret) {
+		pendingDelete = s;
+		confirmOpen = true;
+	}
+
+	async function confirmDelete() {
+		const s = pendingDelete;
+		if (!s) return;
 		try {
 			await api.deleteSecret(s.id);
 			error = '';
@@ -105,6 +173,29 @@
 		<p class="text-muted-foreground text-sm">Workspace settings and secrets.</p>
 	</div>
 
+	{#if devKey && !bannerDismissed}
+		<div class="mb-4 flex items-start gap-3 rounded-md border border-amber-500/40 px-3 py-2.5 text-sm">
+			<TriangleAlertIcon class="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+			<div class="min-w-0 flex-1">
+				<p class="font-medium text-amber-700 dark:text-amber-300">
+					Using the built-in development key
+				</p>
+				<p class="text-muted-foreground mt-0.5">
+					Secrets are encrypted with a default key baked into the build. Set
+					<code class="bg-muted rounded px-1">OARLOCK_MASTER_KEY</code> to protect them at rest.
+				</p>
+			</div>
+			<button
+				type="button"
+				onclick={() => (bannerDismissed = true)}
+				class="text-muted-foreground hover:text-foreground shrink-0"
+				aria-label="Dismiss"
+			>
+				<XIcon class="size-4" />
+			</button>
+		</div>
+	{/if}
+
 	<div class="mb-3 flex items-center justify-between gap-4">
 		<div>
 			<h2 class="font-medium">Secrets</h2>
@@ -113,7 +204,12 @@
 				<code class="bg-muted rounded px-1">{'{{secrets.<name>}}'}</code>.
 			</p>
 		</div>
-		<Button onclick={openCreate}><PlusIcon class="size-4" /> Add secret</Button>
+		<div class="flex items-center gap-3">
+			{#if notice}
+				<span class="text-xs text-emerald-600 dark:text-emerald-400">{notice}</span>
+			{/if}
+			<Button onclick={openCreate}><PlusIcon class="size-4" /> Add secret</Button>
+		</div>
 	</div>
 
 	{#if error}
@@ -159,15 +255,20 @@
 								· added {fmtRelative(s.created_at)}
 							</div>
 						</div>
-						<Button
-							variant="ghost"
-							size="icon"
-							class="text-muted-foreground hover:text-destructive shrink-0"
-							onclick={() => remove(s)}
-							aria-label="Delete"
-						>
-							<Trash2Icon class="size-4" />
-						</Button>
+						<div class="flex shrink-0 items-center gap-1">
+							<Button variant="outline" size="sm" onclick={() => openRotate(s)}>
+								<RotateCwIcon class="size-4" /> Rotate…
+							</Button>
+							<Button
+								variant="ghost"
+								size="icon"
+								class="text-muted-foreground hover:text-destructive"
+								onclick={() => remove(s)}
+								aria-label="Delete"
+							>
+								<Trash2Icon class="size-4" />
+							</Button>
+						</div>
 					</div>
 				{/each}
 			</Card.Content>
@@ -177,14 +278,15 @@
 
 <Dialog.Root bind:open>
 	<Dialog.Content class="sm:max-w-md">
-		<Dialog.Header>
-			<Dialog.Title>Add secret</Dialog.Title>
-			<Dialog.Description>
-				Encrypted in the database and never shown again. Values are redacted from all run output
-				and logs.
-			</Dialog.Description>
-		</Dialog.Header>
-		<div class="space-y-4">
+		<form class="contents" onsubmit={save}>
+			<Dialog.Header>
+				<Dialog.Title>Add secret</Dialog.Title>
+				<Dialog.Description>
+					Encrypted in the database and never shown again. Values are redacted from all run output
+					and logs.
+				</Dialog.Description>
+			</Dialog.Header>
+			<div class="space-y-4">
 			<div class="space-y-1.5">
 				<Label>Type</Label>
 				<Select.Root type="single" bind:value={type}>
@@ -239,10 +341,57 @@
 				</div>
 			{/if}
 		</div>
-		<Dialog.Footer>
-			<Button onclick={save} disabled={saving || !name.trim() || !value.trim()}>
-				{saving ? 'Saving…' : 'Add secret'}
-			</Button>
-		</Dialog.Footer>
+			<Dialog.Footer>
+				<Button type="submit" disabled={saving || !name.trim() || !value.trim()}>
+					{saving ? 'Saving…' : 'Add secret'}
+				</Button>
+			</Dialog.Footer>
+		</form>
 	</Dialog.Content>
 </Dialog.Root>
+
+<Dialog.Root bind:open={rotateOpen}>
+	<Dialog.Content class="sm:max-w-md">
+		<form class="contents" onsubmit={rotate}>
+			<Dialog.Header>
+				<Dialog.Title>Rotate secret</Dialog.Title>
+				<Dialog.Description>
+					Replace the value of
+					<code class="bg-muted rounded px-1 font-mono">{rotateTarget?.name}</code>. The name and
+					references stay the same; the new value is encrypted and never shown again.
+				</Dialog.Description>
+			</Dialog.Header>
+			<div class="space-y-1.5">
+				<Label for="rotate-value">New value</Label>
+				<Input
+					id="rotate-value"
+					bind:value={rotateValue}
+					type="password"
+					placeholder="••••••••"
+					class="font-mono text-sm"
+				/>
+			</div>
+			{#if rotateError}
+				<div class="border-destructive/30 bg-destructive/10 text-destructive rounded-md border p-3 text-xs">
+					{rotateError}
+				</div>
+			{/if}
+			<Dialog.Footer>
+				<Button type="button" variant="outline" onclick={() => (rotateOpen = false)}>Cancel</Button>
+				<Button type="submit" disabled={rotating || !rotateValue.trim()}>
+					{rotating ? 'Rotating…' : 'Rotate secret'}
+				</Button>
+			</Dialog.Footer>
+		</form>
+	</Dialog.Content>
+</Dialog.Root>
+
+<ConfirmDialog
+	bind:open={confirmOpen}
+	title="Remove secret?"
+	description={pendingDelete
+		? `"${pendingDelete.name}" will be deleted. Workflows referencing it will stop working.`
+		: ''}
+	confirmText="Remove"
+	onconfirm={confirmDelete}
+/>

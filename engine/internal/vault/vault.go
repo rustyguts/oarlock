@@ -26,21 +26,29 @@ const KeyID = "local-v1"
 const devKey = "0b5e8836f9aeaf6e6a3e2bd1b1f0c39d8a1c2e4f5a6b7c8d9e0f1a2b3c4d5e6f"
 
 type Vault struct {
-	Pool *pgxpool.Pool
-	key  []byte
+	Pool        *pgxpool.Pool
+	key         []byte
+	usingDevKey bool
 }
 
 func New(pool *pgxpool.Pool, hexKey string, log *slog.Logger) (*Vault, error) {
+	usingDevKey := false
 	if hexKey == "" {
 		hexKey = devKey
+		usingDevKey = true
 		log.Warn("OARLOCK_MASTER_KEY not set; using built-in dev key — do not store real secrets")
 	}
 	key, err := hex.DecodeString(hexKey)
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("OARLOCK_MASTER_KEY must be 64 hex chars (32 bytes)")
 	}
-	return &Vault{Pool: pool, key: key}, nil
+	return &Vault{Pool: pool, key: key, usingDevKey: usingDevKey}, nil
 }
+
+// DevKey reports whether the built-in dev master key is in use (no
+// OARLOCK_MASTER_KEY set). The UI surfaces a warning banner so real secrets
+// aren't stored under a key that ships in the source tree.
+func (v *Vault) DevKey() bool { return v.usingDevKey }
 
 func (v *Vault) Encrypt(plain []byte) ([]byte, error) {
 	block, err := aes.NewCipher(v.key)

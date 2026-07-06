@@ -14,21 +14,25 @@ docker compose up -d --build web          # rebuild after web/ changes
 cd engine && go build ./... && go vet ./... && go test ./...
 cd engine && go test ./internal/definition/ -run TestValidateCycle   # single test
 
-cd web && npm run build                   # vite build (does NOT typecheck)
-cd web && npx svelte-check --tsconfig ./tsconfig.json   # typecheck (vite won't catch TS errors)
-cd web && npm run test:ui                 # Playwright visual regression (no backend needed)
-cd web && npm run test:ui:update          # regenerate snapshot baselines after intentional UI changes
-cd web && npx playwright test -g "sidebar"              # single snapshot test
+cd web && bun install                     # install deps (uses bun.lock)
+cd web && bun run build                   # vite build (does NOT typecheck)
+cd web && bun run check                   # typecheck via svelte-check (vite won't catch TS errors)
+cd web && bun run test:ui                 # Playwright visual regression (no backend needed)
+cd web && bun run test:ui:update          # regenerate snapshot baselines after intentional UI changes
+cd web && bunx playwright test -g "sidebar"            # single snapshot test
 ```
 
 Migrations are embedded SQL in `engine/internal/db/migrations/`, applied automatically at API startup in filename order (tracked in `schema_migrations`); River's own tables migrate via `rivermigrate`. There is no down-migration mechanism — dump first (`docker compose exec -T postgres pg_dump -U oarlock oarlock > backups/...`).
 
 ## Engine architecture (engine/)
 
-The non-negotiable core (design §4.1): **no process owns a run; truth lives in Postgres rows**. Two River job types only:
+The non-negotiable core (design §4.1): **no process owns a run; truth lives in Postgres rows**. River job types:
 
-- `advance_run` (`internal/engine/advance.go`): loads the definition + latest task attempt per step, computes ready steps (all `needs` succeeded/skipped), inserts task rows and enqueues `execute_task` jobs **in one transaction**, marks the run succeeded/failed when terminal. Idempotent — re-derives everything from rows, so duplicate advances converge.
-- `execute_task` (`internal/engine/execute.go`): loads the task, builds the frozen expression context (`input`, `steps.<key>` outputs, `secrets.*`), interpolates `{{ }}` config via goja, runs the executor, persists the result, and enqueues the next `advance_run` in the same transaction as the status write.
+- `advance_run` (`internal/engine/advance.go`): loads the definition + latest task attempt per step, computes ready steps (all `needs` succeeded/skipped), inserts task rows and enqueues `execute_task` jobs **in one transaction**, marks the run succeeded/failed when terminal. Idempotent — re-derives everything from rows, so duplicate advances converge. A ready step with an `if` guard is resolved here: a falsy expression writes a terminal `skipped` row (no execute job), an eval error a `failed` row; whenever a guard row is inserted, one follow-up `advance_run` is enqueued in the same tx (nothing else would re-advance since those rows carry no job). Guard context is scoped to the step's transitive `needs` and does **not** bind secrets (conditions must not decrypt the vault on the control queue).
+- `execute_task` (`internal/engine/execute.go`): loads the task, builds the frozen expression context (`input`, the outputs of the step's *transitive* `needs` only via `definition.TransitiveNeeds` — siblings never leak in, `secrets.*`), interpolates `{{ }}` config via goja, runs the executor (optionally under a per-step `timeout`), persists the result, and enqueues the next `advance_run` in the same transaction as the status write. A worker-level `Timeout()` caps a task attempt at 15m (River's default is 60s — do not remove this).
+- `resume_task` (`internal/engine/resume.go`): revives a suspended task (delay >5min or `wait.callback`). Suspension frees the worker slot: the task goes `suspended` + a `suspensions` row is written; a timed delay schedules this job at `resume_at`, a callback waits for `POST /resume/{token}`. Resume flips `suspended`→`succeeded` and enqueues `advance_run`, all one tx. A `reaper` goroutine (`reaper.go`) fails tasks stuck `running` >20min (worker crash / deploy) and honors step retries; a `scheduler` goroutine (`scheduler.go`) fires cron triggers, deduped by a per-occurrence idempotency key so multiple replicas converge to one run.
+
+Unauthenticated ingress (mounted outside the session-auth wrapper, inside `MaxBody`+CORS): `POST /hooks/{ws-slug}/{path}` (webhook triggers, optional HMAC-SHA256 over the raw body), `POST /resume/{token}` (callback suspensions), `/mcp` (workspace MCP server, `oak_` bearer token → workspace). All resolve the workspace from the URL/token, never a session.
 
 Hard rule 2 in practice: **a job insert and its corresponding state write always share a transaction** (`river.Client.InsertTx`). Status transitions are guarded (`where status = 'queued'` / `in ('queued','running')`) so a concurrent cancel beats an in-flight executor's late result. Retries are new task rows (`attempt+1`, scheduled with exponential backoff), never River-level job retries (`MaxAttempts: 1`).
 
@@ -40,9 +44,9 @@ Step executors implement the one `Executor` interface (`internal/steps`); execut
 
 **Live updates**: workers publish fire-and-forget pings to Valkey channel `run:{id}` after each state change; the SSE endpoint (`/v1/runs/{id}/events`) refetches the run snapshot from Postgres per ping. Valkey is never load-bearing for correctness — Postgres remains truth.
 
-**Tenancy**: every API request resolves a workspace from the session (cookie auth with first-run auto-login as the migration-seeded owner — `internal/api/auth.go`); all queries filter by `workspace_id` via `s.workspace(r)`. Never join across workspaces (hard rule 7). CORS is credentialed (echoed origin, not wildcard).
+**Tenancy**: every API request resolves a workspace from the session (cookie auth with first-run auto-login as the migration-seeded owner — `internal/api/auth.go`; session tokens are stored sha256-hashed, raw token only in the cookie); all queries filter by `workspace_id` via `s.workspace(r)`. Never join across workspaces (hard rule 7). CORS is credentialed against an explicit origin allowlist (`OARLOCK_ALLOWED_ORIGINS`, default `http://localhost:3001`) — never wildcard. Programmatic access (the `/mcp` endpoint) authenticates via `workspace_api_tokens` (`oak_` tokens, sha256-hashed) instead of a session; the token *is* the workspace credential. Request bodies are capped at 1MB (`api.MaxBody`) and 5xx responses are sanitized to `{"error":"internal error"}`.
 
-**Reference protection**: secrets and MCP servers are referenced from step configs *by name*. Deleting (or renaming) one that a workflow's current version references must 409 with the referencing workflow names — see `referencingWorkflows` (jsonb step-config scan) and `workflowsMentioning` (definition text scan for `secrets.<name>`) in `internal/api/resources.go`. New referenceable resources need the same treatment.
+**Reference protection**: secrets and MCP servers are referenced from step configs *by name*. Deleting (or renaming) one that a workflow's current version references must 409 with the referencing workflow names — see `referencingWorkflows` (jsonb step-config scan) and `workflowsMentioning` (definition regex scan for `secrets.<name>`, word-boundary so `foo` isn't blocked by `foobar`) in `internal/api/resources.go`. New referenceable resources need the same treatment. Secrets can be rotated in place (`PUT /v1/secrets/{id}`) without unwiring references — the only way to change a value while it's referenced.
 
 ## Web architecture (web/)
 
@@ -66,7 +70,7 @@ Whenever you change the frontend, **verify by looking at it, not just by buildin
 2. Drive a real browser (Playwright chromium is installed; scratch scripts in `/tmp` work) against http://localhost:3001 — visit the changed screens in **light and dark mode** (`button[aria-label="Toggle theme"]`).
 3. Screenshot and **actually read the pixels** against what was asked: spacing, contrast, active states, phantom backgrounds, overflow.
 4. Iterate until right. Visual bugs compile clean — the sidebar `data-active="false"` bug only showed up in screenshots, twice.
-5. Then regenerate baselines: `npm run test:ui:update && npm run test:ui` (must pass twice).
+5. Then regenerate baselines: `bun run test:ui:update && bun run test:ui` (must pass twice).
 
 ## Visual regression suite (web/tests/)
 

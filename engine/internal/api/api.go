@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,8 +39,12 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workflows", s.listWorkflows)
 	mux.HandleFunc("POST /v1/workflows", s.createWorkflow)
 	mux.HandleFunc("GET /v1/workflows/{id}", s.getWorkflow)
+	mux.HandleFunc("PATCH /v1/workflows/{id}", s.updateWorkflow)
 	mux.HandleFunc("DELETE /v1/workflows/{id}", s.deleteWorkflow)
 	mux.HandleFunc("PUT /v1/workflows/{id}/definition", s.putDefinition)
+	mux.HandleFunc("GET /v1/workflows/{id}/versions", s.listVersions)
+	mux.HandleFunc("GET /v1/workflows/{id}/versions/{version}", s.getVersion)
+	mux.HandleFunc("POST /v1/logout", s.logout)
 	mux.HandleFunc("POST /v1/workflows/{id}/runs", s.startRun)
 	mux.HandleFunc("GET /v1/workflows/{id}/runs", s.listRuns)
 	mux.HandleFunc("GET /v1/runs/{id}", s.getRun)
@@ -49,17 +54,29 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runs/{id}/logs", s.runLogs)
 	mux.HandleFunc("GET /v1/runs/{id}/logs.txt", s.runLogsDownload)
 	s.resourceRoutes(mux)
+	s.triggerRoutes(mux)
+	s.tokenRoutes(mux)
 }
 
-// CORS allows the dev web UI (different origin) to call the API directly.
-// Sessions ride a cookie, so the origin is echoed and credentials allowed
-// (wildcard origin is incompatible with credentialed requests).
-func CORS(next http.Handler) http.Handler {
+// CORS lets the web UI (different origin) call the API directly. Sessions ride
+// a cookie, so credentialed requests can't use a wildcard origin: the request
+// origin is echoed only when it's on the explicit allowlist
+// (OARLOCK_ALLOWED_ORIGINS). Vary: Origin keeps caches from serving the wrong
+// ACAO to a different origin.
+func CORS(allowed []string, next http.Handler) http.Handler {
+	allow := make(map[string]bool, len(allowed))
+	for _, o := range allowed {
+		if o = strings.TrimSpace(o); o != "" {
+			allow[o] = true
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if origin := r.Header.Get("Origin"); origin != "" {
+		// Vary on every response (not just allowed ones) so a shared cache
+		// never replays a response minus ACAO headers to an allowed origin.
+		w.Header().Set("Vary", "Origin")
+		if origin := r.Header.Get("Origin"); origin != "" && allow[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Vary", "Origin")
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -67,6 +84,16 @@ func CORS(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// MaxBody caps request bodies so a single request can't force an unbounded
+// read. Oversize bodies surface through the handlers' JSON-decode error paths
+// as 400s (http.MaxBytesError is returned by Decode).
+func MaxBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -199,6 +226,53 @@ func (s *Server) getWorkflow(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, wf)
 }
 
+// updateWorkflow patches workflow metadata (name, is_enabled). Only provided
+// fields change; slug is immutable because it's referenced elsewhere. Note:
+// is_enabled will gate *triggers* (upcoming) — manual runs stay allowed
+// regardless of it.
+func (s *Server) updateWorkflow(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid workflow id"))
+		return
+	}
+	var req struct {
+		Name      *string `json:"name"`
+		IsEnabled *bool   `json:"is_enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid body"))
+		return
+	}
+	var name *string
+	if req.Name != nil {
+		trimmed := strings.TrimSpace(*req.Name)
+		if trimmed == "" {
+			s.error(w, http.StatusBadRequest, fmt.Errorf("name cannot be empty"))
+			return
+		}
+		name = &trimmed
+	}
+	var outName string
+	var enabled bool
+	err = s.DB.QueryRow(r.Context(), `
+		update workflows set
+		  name = coalesce($3, name),
+		  is_enabled = coalesce($4, is_enabled),
+		  updated_at = now()
+		where id = $1 and workspace_id = $2
+		returning name, is_enabled`, id, s.workspace(r), name, req.IsEnabled).Scan(&outName, &enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		s.error(w, http.StatusNotFound, fmt.Errorf("workflow not found"))
+		return
+	}
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.json(w, http.StatusOK, map[string]any{"id": id, "name": outName, "is_enabled": enabled})
+}
+
 func (s *Server) deleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -285,6 +359,80 @@ func (s *Server) validateDefinition(raw json.RawMessage) error {
 	return def.Validate(s.Engine.Registry.Has)
 }
 
+// listVersions returns the immutable version history, newest first. Rollback is
+// re-saving an old definition through PUT .../definition, so there's no mutating
+// version endpoint. Workspace-scoped via the workflows join.
+func (s *Server) listVersions(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid workflow id"))
+		return
+	}
+	rows, err := s.DB.Query(r.Context(), `
+		select v.version, v.created_at::text,
+		       jsonb_array_length(coalesce(v.definition->'steps', '[]'::jsonb)) as step_count,
+		       (v.id = w.current_version_id) as is_current
+		from workflow_versions v
+		join workflows w on w.id = v.workflow_id
+		where w.id = $1 and w.workspace_id = $2
+		order by v.version desc`, id, s.workspace(r))
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer rows.Close()
+	type versionRow struct {
+		Version   int    `json:"version"`
+		CreatedAt string `json:"created_at"`
+		StepCount int    `json:"step_count"`
+		IsCurrent bool   `json:"is_current"`
+	}
+	out := []versionRow{}
+	for rows.Next() {
+		var v versionRow
+		if err := rows.Scan(&v.Version, &v.CreatedAt, &v.StepCount, &v.IsCurrent); err != nil {
+			s.error(w, http.StatusInternalServerError, err)
+			return
+		}
+		out = append(out, v)
+	}
+	s.json(w, http.StatusOK, out)
+}
+
+// getVersion returns one pinned version's definition (for preview / rollback).
+func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid workflow id"))
+		return
+	}
+	version, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
+		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid version"))
+		return
+	}
+	var out struct {
+		Version    int             `json:"version"`
+		CreatedAt  string          `json:"created_at"`
+		Definition json.RawMessage `json:"definition"`
+	}
+	err = s.DB.QueryRow(r.Context(), `
+		select v.version, v.created_at::text, v.definition
+		from workflow_versions v
+		join workflows w on w.id = v.workflow_id
+		where w.id = $1 and w.workspace_id = $2 and v.version = $3`,
+		id, s.workspace(r), version).Scan(&out.Version, &out.CreatedAt, &out.Definition)
+	if errors.Is(err, pgx.ErrNoRows) {
+		s.error(w, http.StatusNotFound, fmt.Errorf("version not found"))
+		return
+	}
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.json(w, http.StatusOK, out)
+}
+
 // --- runs ---
 
 func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
@@ -294,11 +442,13 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Input map[string]any `json:"input"`
+		Input          map[string]any `json:"input"`
+		IdempotencyKey string         `json:"idempotency_key"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req) // empty body = no input
 
-	runID, err := s.Engine.StartRun(r.Context(), s.workspace(r), id, req.Input)
+	runID, created, err := s.Engine.StartRunOpts(r.Context(), s.workspace(r), id, req.Input,
+		engine.RunOpts{IdempotencyKey: req.IdempotencyKey})
 	if errors.Is(err, pgx.ErrNoRows) {
 		s.error(w, http.StatusNotFound, fmt.Errorf("workflow not found or has no version"))
 		return
@@ -307,7 +457,12 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.error(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.json(w, http.StatusCreated, map[string]any{"run_id": runID})
+	// 201 for a new run, 200 when an idempotency key replayed an existing one.
+	status := http.StatusCreated
+	if !created {
+		status = http.StatusOK
+	}
+	s.json(w, status, map[string]any{"run_id": runID})
 }
 
 func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
@@ -315,6 +470,32 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid workflow id"))
 		return
+	}
+	// Keyset pagination: ?limit=1..200 (default 50) and ?before=<run id> for
+	// the next page. `before` anchors on that run's (created_at, id) so ties on
+	// created_at can't skip or repeat rows.
+	limit := clampLimit(r.URL.Query().Get("limit"), 50, 200)
+	var beforeCreated *string
+	var beforeID *uuid.UUID
+	if b := r.URL.Query().Get("before"); b != "" {
+		bid, err := uuid.Parse(b)
+		if err != nil {
+			s.error(w, http.StatusBadRequest, fmt.Errorf("invalid before cursor"))
+			return
+		}
+		var created string
+		err = s.DB.QueryRow(r.Context(),
+			`select created_at::text from runs where id = $1 and workspace_id = $2`,
+			bid, s.workspace(r)).Scan(&created)
+		if errors.Is(err, pgx.ErrNoRows) {
+			s.error(w, http.StatusBadRequest, fmt.Errorf("unknown before cursor"))
+			return
+		}
+		if err != nil {
+			s.error(w, http.StatusInternalServerError, err)
+			return
+		}
+		beforeCreated, beforeID = &created, &bid
 	}
 	rows, err := s.DB.Query(r.Context(), `
 		select r.id, r.status::text, r.created_at::text, r.started_at::text, r.finished_at::text, v.version,
@@ -324,7 +505,9 @@ func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
 		        order by te.finished_at desc nulls last limit 1) as error_summary
 		from runs r join workflow_versions v on v.id = r.workflow_version_id
 		where r.workflow_id = $1 and r.workspace_id = $2
-		order by r.created_at desc limit 100`, id, s.workspace(r))
+		  and ($4::timestamptz is null or (r.created_at, r.id) < ($4, $5))
+		order by r.created_at desc, r.id desc limit $3`,
+		id, s.workspace(r), limit, beforeCreated, beforeID)
 	if err != nil {
 		s.error(w, http.StatusInternalServerError, err)
 		return
@@ -473,8 +656,18 @@ func (s *Server) runEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	sub := s.Cache.Subscribe(ctx, engine.RunChannel(id))
-	defer sub.Close()
+
+	// Subscribe to change pings when Valkey is available. Valkey is never
+	// load-bearing for correctness — Postgres is truth — so a nil cache or a
+	// failed subscribe just falls back to a faster poll-only loop.
+	var ch <-chan *redis.Message
+	if s.Cache != nil {
+		sub := s.Cache.Subscribe(ctx, engine.RunChannel(id))
+		defer sub.Close()
+		if _, err := sub.Receive(ctx); err == nil {
+			ch = sub.Channel()
+		}
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -502,14 +695,47 @@ func (s *Server) runEvents(w http.ResponseWriter, r *http.Request) {
 	if terminal, err := send(); terminal || err != nil {
 		return
 	}
-	ticker := time.NewTicker(5 * time.Second)
+
+	// Poll cadence backs up (or fully covers) pings: slow when pings drive
+	// refetches, fast when poll-only.
+	interval := 5 * time.Second
+	if ch == nil {
+		interval = 2 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	ch := sub.Channel()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ch:
+		case _, ok := <-ch:
+			if !ok {
+				// Subscription closed: drop it so this case (a receive on a
+				// nil channel) blocks forever instead of spinning hot; the
+				// ticker keeps the stream alive.
+				ch = nil
+				continue
+			}
+			// Coalesce a burst: a chatty task pings per log line, and each
+			// ping is a full Postgres refetch per subscriber. Absorb further
+			// pings for ~250ms, then refetch once.
+			coalesce := time.NewTimer(250 * time.Millisecond)
+		drain:
+			for {
+				select {
+				case <-ctx.Done():
+					coalesce.Stop()
+					return
+				case _, ok := <-ch:
+					if !ok {
+						ch = nil
+						break drain
+					}
+				case <-coalesce.C:
+					break drain
+				}
+			}
 		case <-ticker.C:
 		}
 		if terminal, err := send(); terminal || err != nil {
@@ -525,12 +751,25 @@ func (s *Server) runLogs(w http.ResponseWriter, r *http.Request) {
 		s.error(w, http.StatusBadRequest, fmt.Errorf("invalid run id"))
 		return
 	}
+	// Keyset pagination, newest first: ?limit=1..2000 (default 500) and
+	// ?before_id=<log id> for older pages.
+	limit := clampLimit(r.URL.Query().Get("limit"), 500, 2000)
+	var beforeID *int64
+	if b := r.URL.Query().Get("before_id"); b != "" {
+		n, err := strconv.ParseInt(b, 10, 64)
+		if err != nil {
+			s.error(w, http.StatusBadRequest, fmt.Errorf("invalid before_id cursor"))
+			return
+		}
+		beforeID = &n
+	}
 	rows, err := s.DB.Query(r.Context(), `
 		select id, task_id, step_key, ts::text, level, message, fields
 		from task_logs
 		where run_id = $1 and workspace_id = $2
+		  and ($4::bigint is null or id < $4)
 		order by id desc
-		limit 1000`, id, s.workspace(r))
+		limit $3`, id, s.workspace(r), limit, beforeID)
 	if err != nil {
 		s.error(w, http.StatusInternalServerError, err)
 		return
@@ -625,10 +864,25 @@ func (s *Server) json(w http.ResponseWriter, status int, v any) {
 }
 
 func (s *Server) error(w http.ResponseWriter, status int, err error) {
+	msg := err.Error()
 	if status >= 500 {
+		// Log the real cause (SQL details etc.) but never leak it to clients.
 		s.Log.Error("api error", "error", err)
+		msg = "internal error"
 	}
-	s.json(w, status, map[string]string{"error": err.Error()})
+	s.json(w, status, map[string]string{"error": msg})
+}
+
+// clampLimit parses a ?limit= value, falling back to def and capping at max.
+func clampLimit(raw string, def, max int) int {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return def
+	}
+	if n > max {
+		return max
+	}
+	return n
 }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)

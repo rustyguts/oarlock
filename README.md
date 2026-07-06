@@ -38,7 +38,7 @@ support `{{ }}` expressions against `input` and `steps.<key>` outputs, e.g.
 cd engine && go run ./cmd/api
 
 # web (talks to the API on :9000)
-cd web && npm install && npm run dev
+cd web && bun install && bun run dev
 
 # tests
 make test
