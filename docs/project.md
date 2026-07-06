@@ -286,7 +286,8 @@ Postgres service, `-p 1`; web svelte-check/build/vitest).
   for cloud).
 - Per-workspace concurrency cap (the fairness knob and pricing lever) not
   implemented.
-- Signup/login UI + multi-user still absent (auto-login bootstrap remains).
+- Built-in auth is designed but not built — see §7. Until it ships, the
+  auto-login bootstrap remains and instances must not be network-exposed.
 
 ### Phase 2 — multi-tenant cloud alpha (exit: 10–20 external workspaces, zero isolation incidents)
 
@@ -320,7 +321,104 @@ Postgres service, `-p 1`; web svelte-check/build/vitest).
 - Log retention: weekly partition maintenance + `DROP PARTITION`.
 - goja frozen-context hardening + memory limits.
 
-## 7. Platform administration (decision, not scheduled work)
+## 7. Built-in authentication (design v1 — accepted, building next)
+
+Simple auth out of the box for self-hosters: first visit creates the admin,
+everything requires login, admins manage users and API keys. No SMTP, no
+external IdP, no new infrastructure — Postgres and the existing session
+mechanism carry all of it.
+
+### Decisions
+
+- **Identity**: email + password. Hashes are argon2id (`x/crypto/argon2`,
+  OWASP parameters: 19 MiB memory, t=2, p=1, PHC-encoded) in a new nullable
+  `users.password_hash` — NULL means the account cannot log in.
+- **First run = setup**: while no user has a password, authenticated routes
+  return 401 with `{"setup_required": true}` and the UI routes to `/setup`.
+  `POST /v1/setup` **claims the migration-seeded owner account in place**
+  (sets email, name, password) rather than inserting a new user — every
+  `created_by` FK and the owner membership survive, and the guard
+  (`where password_hash is null` on the seeded row) makes concurrent setup
+  attempts race-safe. The first account is therefore the admin by
+  construction.
+- **Subsequent users are admin-created** (signup stays closed): admins add
+  users from a Users page with an initial password and
+  `must_change_password=true`; the user is forced through a password change
+  on first login. No open registration, no invite-link plumbing, no email
+  dependency. Invite links can layer on later.
+- **Roles**: reuse the existing `workspace_members` ladder, enforced in v1 as
+  two tiers — **admin** (`owner`|`admin`) and **member** (`editor`|`viewer`).
+  Admin-only surface: user management and API tokens. Everything else is
+  available to any authenticated member; per-route viewer enforcement is
+  deferred until it's needed.
+- **API keys**: the existing `oak_` workspace tokens authenticate the **whole
+  `/v1` API** (plus `/mcp`, as today) via `Authorization: Bearer`. Token
+  principals are member-tier and are **hard-excluded from the admin surface**
+  (`/v1/users*`, `/v1/api-tokens*`, auth endpoints) — a leaked key can drive
+  workflows but can never mint credentials or escalate.
+  `POST /v1/api-tokens/{id}/rotate` swaps the hash in place (same id/name)
+  and returns the new raw token exactly once, mirroring secret rotation.
+- **Sessions**: the existing mechanism stays (sha256-hashed tokens, 30-day
+  TTL, HttpOnly + SameSite=Lax cookie, logout, expiry pruning). Login mints a
+  fresh token (no fixation); setting or changing a password deletes the
+  user's other sessions. The cookie gains `Secure` automatically when the
+  request arrived over TLS (`X-Forwarded-Proto`), overridable via
+  `OARLOCK_SECURE_COOKIES=auto|always|never`. The **auto-login bootstrap is
+  removed**.
+
+### API surface
+
+Unauthenticated: `POST /v1/setup` (first run only), `POST /v1/login`
+(uniform "invalid credentials", per-IP+email rate limit — in-memory, so
+per-replica in HA; acceptable v1). Authenticated (self): `POST /v1/logout`,
+`POST /v1/password` (requires current password unless `must_change_password`),
+`GET /v1/me` (gains `must_change_password`). Admin-only: `GET|POST
+/v1/users`, `PATCH /v1/users/{id}` (name/role), `DELETE /v1/users/{id}`,
+`POST /v1/users/{id}/reset-password` (temp password + forced change), token
+CRUD + rotate. Guards: the last admin can't be deleted or demoted. Webhooks,
+`/resume/{token}`, `/mcp`, `/healthz`, and the static UI assets keep their
+current auth models.
+
+`WithAuth` resolution order: `Bearer oak_…` → token principal (workspace,
+member-tier); else session cookie → user principal; else 401 (with
+`setup_required` while unconfigured). A `requireAdmin` wrapper protects the
+admin routes; token principals always fail it.
+
+### UI
+
+`/setup` and `/login` pages (minimal centered card, house style). The root
+layout fetches `/v1/me` and redirects: 401→`/login`, `setup_required`→
+`/setup`, `must_change_password`→ change-password screen. Sidebar footer
+becomes a user menu (change password, log out). New admin-only **Users**
+page (create / role / reset password / delete). The MCP Access page becomes
+**API Access**: tokens now cover the full API, with a Rotate action reusing
+the shown-once dialog.
+
+### Migration and compatibility
+
+One migration: `users.password_hash text`, `users.must_change_password
+boolean not null default false`. Existing installs wake up in setup mode
+(the seeded user has no password); their data is untouched and setup adopts
+it. DB-backed API tests replace the cookie-bootstrap flow with a
+seed-user-and-login helper. The dev split (vite :3001 → API :9000) works
+unchanged over credentialed CORS. Once this ships, the houston deployment
+can graduate from tailnet-only — after the SSRF guard also lands (§6).
+
+### Out of scope for v1
+
+OIDC/SSO (Phase 3, paid), email flows, invite links, per-key token scopes,
+2FA, audit log (Phase 3), multi-workspace membership.
+
+### Build order (each lands green)
+
+1. Engine: migration + argon2id + setup/login/logout/password endpoints +
+   `WithAuth` rework + rate limit; bootstrap removed; DB-backed tests.
+2. Engine: users CRUD + last-admin guards; bearer tokens on `/v1` + rotate.
+3. Web: setup/login/change-password + route guard + user menu.
+4. Web: Users page + API Access rotate; regenerate snapshot baselines.
+5. Docs + houston follow-up (exposure decision).
+
+## 8. Platform administration (decision, not scheduled work)
 
 **A platform operator is not a workspace role.** The workspace ladder
 (`owner > admin > editor > viewer`) is tenant-scoped and stays that way;
