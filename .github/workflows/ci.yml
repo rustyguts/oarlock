@@ -50,7 +50,11 @@ jobs:
             exit 1
           fi
       - name: test
-        run: go test ./...
+        # -p 1 runs package test binaries serially. The DB-backed tests in
+        # internal/engine and internal/api share the one DATABASE_URL_TEST
+        # database and truncate between tests, so parallel package binaries
+        # would race (one package's truncate wipes another's seeded rows).
+        run: go test -p 1 ./...
 
   web:
     name: web (SvelteKit)
