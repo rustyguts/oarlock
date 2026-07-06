@@ -1,0 +1,93 @@
+# oarlock Helm chart values.
+#
+# One image, two shapes:
+#   mode: simple   — a single Deployment running UI + API + workers
+#                    (OARLOCK_MODE=all). The easiest way to run oarlock.
+#   mode: scalable — separate api and worker Deployments from the same image
+#                    (OARLOCK_MODE=api / OARLOCK_MODE=worker), each scaled
+#                    independently. State lives in Postgres, so any number of
+#                    replicas of either is safe (migrations serialize on a
+#                    Postgres advisory lock).
+mode: simple
+
+image:
+  repository: ghcr.io/rustyguts/oarlock
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicas:
+  # simple mode (all-in-one). More than 1 is safe — runs are coordinated
+  # through Postgres — but scalable mode is the intended shape for that.
+  all: 1
+  # scalable mode
+  api: 2
+  worker: 2
+
+config:
+  # Master encryption key for the secrets vault: 64 hex chars
+  # (openssl rand -hex 32). REQUIRED unless existingSecret is set — the chart
+  # refuses to install without one so real secrets are never silently
+  # encrypted under the built-in dev key.
+  masterKey: ""
+  # Postgres connection string. Required when postgres.enabled=false (ignored
+  # otherwise — the bundled postgres wires itself).
+  databaseUrl: ""
+  # host:port of an external Valkey/Redis. Defaults to the bundled valkey
+  # when valkey.enabled; leave empty otherwise — oarlock degrades to polling.
+  valkeyAddr: ""
+  # Extra CORS origins (comma-separated). The embedded UI is same-origin, so
+  # this is only for external tooling / dev UIs.
+  allowedOrigins: ""
+
+# Name of an existing Secret to use instead of config.masterKey/databaseUrl.
+# Expected keys: OARLOCK_MASTER_KEY, and DATABASE_URL when postgres.enabled
+# is false.
+existingSecret: ""
+
+service:
+  type: ClusterIP
+  port: 9000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: oarlock.example.com
+  tls:
+    enabled: false
+    # cert-manager or pre-provisioned TLS secret name.
+    secretName: ""
+
+resources:
+  all: {}
+  api: {}
+  worker: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Bundled single-node Postgres — fine for homelab/simple installs. For
+# anything you care about, disable it and point config.databaseUrl (or
+# existingSecret's DATABASE_URL) at a managed database.
+postgres:
+  enabled: true
+  image: postgres:18-alpine
+  database: oarlock
+  username: oarlock
+  # Override for anything non-throwaway.
+  password: oarlock
+  storage: 5Gi
+  # Empty = cluster default StorageClass.
+  storageClassName: ""
+  resources: {}
+
+# Bundled Valkey. Only accelerates live UI updates (pub/sub) — oarlock is
+# fully functional without it, so it runs ephemeral (no persistence).
+valkey:
+  enabled: true
+  image: valkey/valkey:9-alpine
+  resources: {}

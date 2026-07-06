@@ -7,21 +7,24 @@ oarlock is a self-hostable workflow automation platform: a drag-and-drop canvas 
 ## Commands
 
 ```sh
-make up                                   # full stack: Postgres 18, Valkey 9, API :9000, web :3001
-docker compose up -d --build api          # rebuild after engine/ changes
-docker compose up -d --build web          # rebuild after web/ changes
+make up                                   # full stack: Postgres 18, Valkey 9, oarlock (UI+API) :9000
+docker compose up -d --build oarlock      # rebuild the all-in-one image after engine/ or web/ changes
 
 cd engine && go build ./... && go vet ./... && go test ./...
 cd engine && go test ./internal/definition/ -run TestValidateCycle   # single test
 
 cd web && bun install                     # install deps (uses bun.lock)
-cd web && bun run build                   # vite build (does NOT typecheck)
+cd web && bun run build                   # static SPA build (does NOT typecheck)
 cd web && bun run check                   # typecheck via svelte-check (vite won't catch TS errors)
 cd web && bun run test:unit               # vitest (flow.ts round-trip etc.)
 cd web && bun run test:ui                 # Playwright visual regression (no backend needed)
 cd web && bun run test:ui:update          # regenerate snapshot baselines after intentional UI changes
 cd web && bunx playwright test -g "sidebar"            # single snapshot test
+
+./deploy/chart/test.sh                    # helm chart checks (lint + template assertions)
 ```
+
+**One image** (root `Dockerfile`): the web UI builds to a static SPA, is copied into `engine/internal/webui/dist/`, and the Go binary embeds and serves it. `OARLOCK_MODE` selects the role at runtime — `all` (default: UI + API + workers), `api` (UI + API, inserts jobs only), `worker` (workers/reaper/scheduler + `/healthz` only). Schema + River migrations run under a Postgres advisory lock so concurrently booting replicas are safe. CI publishes `ghcr.io/rustyguts/oarlock` on pushes to main (`.github/workflows/docker.yml`); the Helm chart lives in `deploy/chart/oarlock` (mode=simple|scalable).
 
 Migrations are embedded SQL in `engine/internal/db/migrations/`, applied automatically at API startup in filename order (tracked in `schema_migrations`); River's own tables migrate via `rivermigrate`. There is no down-migration mechanism — dump first (`docker compose exec -T postgres pg_dump -U oarlock oarlock > backups/...`).
 
@@ -51,7 +54,7 @@ Step executors implement the one `Executor` interface (`internal/steps`); execut
 
 ## Web architecture (web/)
 
-SvelteKit (Svelte 5 runes) + Tailwind 4 + shadcn-svelte + `@xyflow/svelte`. The browser calls the Go API directly (`PUBLIC_API_URL`, default `http://localhost:9000`) with `credentials: 'include'`; there are no SvelteKit server routes.
+SvelteKit (Svelte 5 runes) + Tailwind 4 + shadcn-svelte + `@xyflow/svelte`, built as a **static SPA** (adapter-static, `ssr = false` in the root layout) and served by the Go binary. The browser calls the API same-origin by default; `PUBLIC_API_URL` overrides it for the dev split (`bun run dev` on :3001 → API on :9000, `cp .env.example .env` first — CORS applies there). There are no SvelteKit server routes.
 
 The **JSON definition is the only canonical workflow artifact** (hard rule 4): `src/lib/flow.ts` converts definition⇄canvas (node id = step key; edge source→target = "target needs source"; canvas positions persist in each step's `ui` field — the engine ignores them). Saving the canvas creates a new immutable version. The run detail page renders the **pinned** version a run executed, not the current one.
 
@@ -67,8 +70,8 @@ shadcn-svelte components live in `src/lib/components/ui/` and are project-owned 
 
 Whenever you change the frontend, **verify by looking at it, not just by building it**:
 
-1. Build + rebuild the web container.
-2. Drive a real browser (Playwright chromium is installed; scratch scripts in `/tmp` work) against http://localhost:3001 — visit the changed screens in **light and dark mode** (`button[aria-label="Toggle theme"]`).
+1. Rebuild the image: `docker compose up -d --build oarlock`.
+2. Drive a real browser (Playwright chromium is installed; scratch scripts in `/tmp` work) against http://localhost:9000 — visit the changed screens in **light and dark mode** (`button[aria-label="Toggle theme"]`).
 3. Screenshot and **actually read the pixels** against what was asked: spacing, contrast, active states, phantom backgrounds, overflow.
 4. Iterate until right. Visual bugs compile clean — the sidebar `data-active="false"` bug only showed up in screenshots, twice.
 5. Then regenerate baselines: `bun run test:ui:update && bun run test:ui` (must pass twice).
@@ -79,7 +82,7 @@ Fully deterministic: the API is mocked at the network layer (`tests/mock-api.ts`
 
 ## Gotchas
 
-- Host ports 8080, 3000, and 5173 are occupied by other projects on this machine — that's why the API is :9000 and web is :3001.
+- Host ports 8080, 3000, and 5173 are occupied by other projects on this machine — that's why oarlock is :9000 and the web dev server is :3001.
 - `vite build` succeeding does not mean the TS is sound; always run svelte-check.
 - Postgres 18's Docker image keeps PGDATA under `/var/lib/postgresql/<major>`, so the volume mounts the parent dir (not `.../data`).
 - Engine DB-backed tests self-skip without Postgres; CI runs them with `go test -p 1` because the engine and api test packages share one `DATABASE_URL_TEST` database and truncate between tests.

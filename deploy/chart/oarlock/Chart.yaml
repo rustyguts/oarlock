@@ -1,0 +1,9 @@
+apiVersion: v2
+name: oarlock
+description: Self-hosted workflow automation — canvas builder over an event-driven Go engine. One image; simple (all-in-one) or scalable (api + worker) modes.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/rustyguts/oarlock
+sources:
+  - https://github.com/rustyguts/oarlock
