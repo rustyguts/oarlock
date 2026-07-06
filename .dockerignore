@@ -11,3 +11,4 @@ web/playwright-report
 web/tests/__snapshots__
 engine/internal/webui/dist
 *.md
+node_modules

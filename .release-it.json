@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/release-it@19/schema/release-it.json",
+  "git": {
+    "requireBranch": "main",
+    "requireUpstream": false,
+    "commitMessage": "chore: release v${version}",
+    "tagName": "v${version}",
+    "tagAnnotation": "v${version}"
+  },
+  "github": {
+    "release": true,
+    "releaseName": "v${version}"
+  },
+  "npm": {
+    "publish": false,
+    "ignoreVersion": true
+  },
+  "hooks": {
+    "after:bump": "./scripts/set-version.sh ${version}"
+  }
+}

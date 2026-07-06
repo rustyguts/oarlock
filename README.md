@@ -101,3 +101,17 @@ cd web && bun run test:ui         # Playwright visual regression (no backend)
 Set `OARLOCK_MASTER_KEY` (64 hex chars, `openssl rand -hex 32`) before
 storing real secrets — without it a built-in dev key is used and the UI shows
 a warning.
+
+## Releases
+
+Two channels, both publishing `ghcr.io/rustyguts/oarlock` (the repo is v0 —
+only minor and patch releases for now):
+
+- **dev** — every push to `main` cuts a prerelease (`vX.Y.Z-dev.N` tag +
+  GitHub prerelease) and pushes image tags `X.Y.Z-dev.N` and `dev`. No
+  version-bump commits land on `main`; versions derive from git tags.
+- **production** — the *Release* workflow (Actions → Release → Run workflow,
+  pick `patch` or `minor`) bumps the version everywhere
+  (`package.json`, `Chart.yaml`, the API's version constant) in a release
+  commit, tags `vX.Y.Z`, publishes a GitHub Release, and pushes image tags
+  `X.Y.Z` and `latest`.

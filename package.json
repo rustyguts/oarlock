@@ -1,0 +1,12 @@
+{
+  "name": "oarlock-release",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Release tooling only — the app lives in engine/ and web/.",
+  "scripts": {
+    "release": "release-it"
+  },
+  "devDependencies": {
+    "release-it": "^19.0.5"
+  }
+}
