@@ -1,4 +1,5 @@
-// Package steps defines the Executor interface (design §4.2) and the
+// Package steps defines the Executor interface (docs/project.md, "Executor
+// abstraction") and the
 // step-type registry. Execution strategy is a property of the step type,
 // invisible to the engine; in-process is the default forever.
 package steps
@@ -30,7 +31,7 @@ type Executor interface {
 }
 
 // Suspend is the sentinel an Executor returns to park its task instead of
-// finishing it (design §4.1 "Long waits"): the worker slot is freed and the
+// finishing it (design: long waits): the worker slot is freed and the
 // task sits 'suspended' until a scheduled resume (delay) or an external HTTP
 // callback (approval) revives it. The engine keys off it via errors.As, so it
 // is returned as the error value — always as a *Suspend, since Error is on the

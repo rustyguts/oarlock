@@ -16,7 +16,7 @@ import (
 	"github.com/rustyguts/oarlock/engine/internal/engine"
 )
 
-// The workspace MCP server (design §6 step 18): every workspace's workflows
+// The workspace MCP server: every workspace's workflows
 // become tools an AI agent can call. The design doc routes the workspace via
 // the URL; we scope via the token instead — one stable /mcp URL, and the
 // bearer token IS the workspace credential. This is consistent with the future
