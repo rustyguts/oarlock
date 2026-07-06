@@ -55,12 +55,14 @@ if helm template smoke . --set config.masterKey="$KEY" --set mode=bogus >/dev/nu
 fi
 
 echo "== kubectl client-side validation"
-if command -v kubectl >/dev/null; then
+# kubectl's client dry-run still fetches OpenAPI schemas from a cluster, so
+# this only runs where one is reachable (dev machines) — CI has none.
+if command -v kubectl >/dev/null && kubectl version --request-timeout=3s >/dev/null 2>&1; then
   kubectl apply --dry-run=client -f - <<<"$simple" >/dev/null
   kubectl apply --dry-run=client -f - <<<"$scalable" >/dev/null
   echo "   ok"
 else
-  echo "   kubectl not found; skipped"
+  echo "   no kubectl or no reachable cluster; skipped"
 fi
 
 echo "ALL CHART CHECKS PASSED"

@@ -4,22 +4,27 @@
 #   api    — UI + API only (HA: scale separately from workers)
 #   worker — workers only, /healthz for probes
 
-# ---- web UI (static SPA) ----
-FROM oven/bun:1-alpine AS web
+# Build stages run natively on the build host ($BUILDPLATFORM) and
+# cross-compile for the target — multi-arch builds never pay the QEMU tax on
+# the heavy web/Go stages, only the trivial runtime stage runs emulated.
+
+# ---- web UI (static SPA; arch-independent output) ----
+FROM --platform=$BUILDPLATFORM oven/bun:1-alpine AS web
 WORKDIR /web
 COPY web/package.json web/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY web/ .
 RUN bun run build
 
-# ---- Go binary embedding the UI ----
-FROM golang:1.26-alpine AS build
+# ---- Go binary embedding the UI (CGO off → pure cross-compile) ----
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY engine/go.mod engine/go.sum ./
 RUN go mod download
 COPY engine/ .
 COPY --from=web /web/build ./internal/webui/dist
-RUN CGO_ENABLED=0 go build -o /out/oarlock ./cmd/api
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/oarlock ./cmd/api
 
 # ---- runtime ----
 FROM alpine:3.21
